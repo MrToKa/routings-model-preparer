@@ -53,3 +53,29 @@ test('inspection enforces raw, nested and count caps and abort', async t => {
   await rejects(inspectSvfEnvelope(bytes, { limits: { maxFiles: 2 } }), 'PACKAGE_LIMIT_EXCEEDED');
   const controller = new AbortController(); controller.abort(); await rejects(inspectSvfEnvelope(bytes, { signal: controller.signal }), 'PACKAGE_ABORTED');
 });
+
+test('SVF v2 from LMVTK 5.0.43.0 is inspected without rewriting its bytes', async t => {
+  const bytes = await envelope(t, { mutate: value => { value.toolkitversion = 'LMVTK 5.0.43.0'; } });
+  const before = Buffer.from(bytes), result = await inspectSvfEnvelope(bytes);
+  assert.equal(result.status, 'INSPECTED');
+  assert.equal(result.resourceClosureVerified, false);
+  assert.deepEqual(result.resources, [{ path: 'output/0/0.pf', bytes: 41, inflatedBytes: 21, assetType: 'Autodesk.CloudPlatform.PackFile' }]);
+  assert.deepEqual(bytes, before);
+});
+
+for (const version of ['LMVTK 5.0.42.0', 'LMVTK 5.0.44.0', 'LMVTK 5.0.43.0 ', '5.0.43.0']) {
+  test('toolkit allowlist rejects unapproved spelling: ' + version, async t => {
+    await rejects(inspectSvfEnvelope(await envelope(t, { mutate: value => { value.toolkitversion = version; } })), 'UNSUPPORTED_PROFILE');
+  });
+}
+
+for (const [name, mutate, code] of [
+  ['manifest v3', value => { value.manifestversion = 3; }, 'UNSUPPORTED_PROFILE'],
+  ['unknown geometry tuple', value => { value.typesets[0].types[0].version = 100; }, 'UNSUPPORTED_PROFILE'],
+  ['external resource', value => { value.assets[0].URI = 'https://example.invalid/0.pf'; }, 'EXTERNAL_REFERENCE'],
+  ['unrecognized manifest field', value => { value.futureLoader = true; }, 'UNSUPPORTED_PROFILE'],
+]) {
+  test('5.0.43.0 still rejects ' + name, async t => {
+    await rejects(inspectSvfEnvelope(await envelope(t, { mutate: value => { value.toolkitversion = 'LMVTK 5.0.43.0'; mutate(value); } })), code);
+  });
+}

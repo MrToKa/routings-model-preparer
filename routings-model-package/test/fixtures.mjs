@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import { writeZip, openZip } from '../lib/zip.mjs';
 
-export async function localModel(t) {
+export async function localModel(t, { toolkitVersion = 'LMVTK 5.0.26.0' } = {}) {
   const root = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'routings-package-test-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const modelDir = path.join(root, 'model');
@@ -22,7 +22,7 @@ export async function localModel(t) {
     ['properties.db', Buffer.from('SQLite format 3\0opaque fixture\n')],
   ]);
   const metaBytes = Buffer.from('{"version":"1.0","metadata":{}}');
-  const svf = { name: 'LMV Manifest', toolkitversion: 'LMVTK 5.0.26.0', manifestversion: 2,
+  const svf = { name: 'LMV Manifest', toolkitversion: toolkitVersion, manifestversion: 2,
     adskID: { sourceSystem: '', type: '', id: '', version: '' },
     assets: [
       { id: '0.pf', type: 'Autodesk.CloudPlatform.PackFile', URI: '0.pf', size: data.get('0.pf').length, usize: 0, typeset: '2' },

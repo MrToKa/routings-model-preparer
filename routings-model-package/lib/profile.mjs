@@ -10,6 +10,9 @@ const PREFIX = 'resources/output/0/';
 const ENTRY = PREFIX + '0.svf';
 const PROPERTY_DB = PREFIX + 'properties.db';
 const PLATFORM = 'Autodesk.CloudPlatform.';
+// Producer versions observed in supported SVF-v2 inputs. Version membership
+// never bypasses the independent asset, tuple, metadata or resource checks.
+const SUPPORTED_TOOLKITS = new Set(['LMVTK 5.0.26.0', 'LMVTK 5.0.43.0']);
 export const ASSET_TYPES = Object.freeze([
   'ProteinMaterials', ...[
     'FragmentList', 'GeometryMetadataList', 'InstanceTree', 'PackFile',
@@ -165,7 +168,7 @@ function sniffBinary(prefix, path) {
 
 function validateSvfManifest(value, resources, archive) {
   fields(value, ['name', 'toolkitversion', 'manifestversion', 'adskID', 'assets', 'typesets'], [], 'SVF manifest');
-  if (value.name !== 'LMV Manifest' || value.toolkitversion !== 'LMVTK 5.0.26.0' || value.manifestversion !== 2) unsupported('Unsupported SVF toolkit or manifest version.', { toolkitversion: value.toolkitversion, manifestversion: value.manifestversion });
+  if (value.name !== 'LMV Manifest' || !SUPPORTED_TOOLKITS.has(value.toolkitversion) || value.manifestversion !== 2) unsupported('Unsupported SVF toolkit or manifest version.', { toolkitversion: value.toolkitversion, manifestversion: value.manifestversion });
   fields(value.adskID, ['sourceSystem', 'type', 'id', 'version'], [], 'SVF adskID');
   if (!Object.values(value.adskID).every(item => typeof item === 'string') || !Array.isArray(value.assets) || !Array.isArray(value.typesets)) unsupported('Invalid SVF declaration arrays.');
   const tuples = new Set(TYPESET_TUPLES.map(tupleKey));

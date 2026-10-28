@@ -338,3 +338,27 @@ test('duplicate/case-colliding resource paths are rejected before profile proces
   provider.resources.push({ ...provider.resources[0], path: provider.resources[0].path.toUpperCase() });
   await rejectsCode(() => validateProfile(provider), 'UNSAFE_PATH');
 });
+
+for (const toolkit of ['LMVTK 5.0.26.0', 'LMVTK 5.0.43.0']) {
+  test('full resource closure accepts ' + toolkit + ' without rewriting SVF', async t => {
+    const { provider, data } = await fixture(t, { mutate: manifest => { manifest.toolkitversion = toolkit; } });
+    const before = Buffer.from(data.get(PREFIX + '0.svf'));
+    const result = await validateProfile(provider);
+    assert.equal(result.status, 'PASS');
+    assert.equal(result.closure.externalReferences, 2);
+    assert.deepEqual(result.closure.additionalResources, ['properties.db']);
+    assert.equal(result.emptyMaterialTextureMaps, 1);
+    assert.deepEqual(data.get(PREFIX + '0.svf'), before);
+  });
+  for (const [name, options, code] of [
+    ['nonempty textures', { material: (() => { const value = material(); value.materials['0'].materials['0'].textures = { diffuse: 'texture.png' }; return value; })() }, 'UNSUPPORTED_PROFILE'],
+    ['metadata unknown field', { metadataText: '{"version":"1.0","metadata":{"unknownLoader":{"value":"x"}}}' }, 'UNSUPPORTED_PROFILE'],
+    ['executable resource', { binary: '<script>active</script>' }, 'EXECUTABLE_CONTENT'],
+    ['missing property database', { afterZip: data => { data.delete(PREFIX + 'properties.db'); } }, 'RESOURCE_MISSING'],
+  ]) {
+    test(toolkit + ' retains rejection of ' + name, async t => {
+      const { provider } = await fixture(t, { ...options, mutate: manifest => { manifest.toolkitversion = toolkit; } });
+      await rejectsCode(() => validateProfile(provider), code);
+    });
+  }
+}
