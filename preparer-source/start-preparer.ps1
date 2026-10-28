@@ -3,15 +3,15 @@ param(
     [ValidateRange(1024,65535)][int]$Port = 8083,
     [string]$ListenAddress = '127.0.0.1',
     [ValidateSet('closed','simulation','live')][string]$Mode = 'closed',
-    [string]$EnvFilePath = (Join-Path $PSScriptRoot '.env'),
-    [string]$ImportRoot = (Join-Path $PSScriptRoot 'imports'),
-    [string]$SourceDirectory = (Join-Path $PSScriptRoot 'sources'),
+    [string]$EnvFilePath,
+    [string]$ImportRoot,
+    [string]$SourceDirectory,
     [string]$PriceProofPath,
     [string]$PriceProofSha256,
     [switch]$AllowNewCloudPreparation,
     [string]$Image = 'routings-model-preparer:stage3',
     [string]$PackageRoot,
-    [string]$SdkSource = (Join-Path $PSScriptRoot 'vendor\viewer\7.130.0'),
+    [string]$SdkSource,
     [string]$NodeBase = 'node@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5',
     [switch]$Build,
     [switch]$Recreate,
@@ -20,6 +20,10 @@ param(
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+if ([string]::IsNullOrWhiteSpace($EnvFilePath)) { $EnvFilePath = Join-Path $PSScriptRoot '.env' }
+if ([string]::IsNullOrWhiteSpace($ImportRoot)) { $ImportRoot = Join-Path $PSScriptRoot 'imports' }
+if ([string]::IsNullOrWhiteSpace($SourceDirectory)) { $SourceDirectory = Join-Path $PSScriptRoot 'sources' }
+if ([string]::IsNullOrWhiteSpace($SdkSource)) { $SdkSource = Join-Path $PSScriptRoot 'vendor\viewer\7.130.0' }
 if ([string]::IsNullOrWhiteSpace($PackageRoot)) { $PackageRoot = Join-Path (Split-Path $PSScriptRoot -Parent) 'routings-model-package' }
 $taskProject = 'routings-preparer'
 $taskCompose = Join-Path $PSScriptRoot 'deployment\compose.yaml'
