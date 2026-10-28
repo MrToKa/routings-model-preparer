@@ -1,0 +1,25 @@
+name: Validate nested raster resources
+on:
+  pull_request:
+    paths:
+      - 'routings-model-package/**'
+      - 'preparer-source/lib/**'
+      - 'preparer-source/test/**'
+      - '.github/workflows/nested-raster-validation.yml'
+permissions:
+  contents: read
+jobs:
+  node-regressions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    container: node@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Verify Node major
+        run: node -e "if (process.versions.node.split('.')[0] !== '24') process.exit(1)"
+      - name: Verify raster inspection and portable packages
+        run: node --test --test-concurrency=1 routings-model-package/test/image-assets.test.mjs routings-model-package/test/inspection.test.mjs
+      - name: Verify signing and complete download/package flow
+        run: node --test --test-concurrency=1 preparer-source/test/aps-provider.test.mjs preparer-source/test/package-adapter.test.mjs
