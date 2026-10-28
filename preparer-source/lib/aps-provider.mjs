@@ -381,7 +381,7 @@ export function createAPSProvider({ clientId, clientSecret, region, bucket, name
         abortCheck(signal);
         fail(error?.code === 'UNSUPPORTED_PROFILE' ? 'UNSUPPORTED_PROFILE' : error?.code === 'PACKAGE_LIMIT_EXCEEDED' ? 'PACKAGE_LIMIT_EXCEEDED' : 'DOWNLOAD_INVALID');
       }
-      if (inspected.supportProfile !== PROFILE || inspected.resourceClosureVerified !== false || !Array.isArray(inspected.resources)) fail('UNSUPPORTED_PROFILE');
+      if (inspected.supportProfile !== PROFILE || inspected.resourceClosureVerified !== false || !Array.isArray(inspected.resources)) { try { process.stderr.write(JSON.stringify({ event: 'svf-profile-rejected', reason: 'SVF inspector returned an incompatible profile contract.' }) + '\n'); } catch {} fail('UNSUPPORTED_PROFILE'); }
       const properties = manifest.records.filter(({ value }) => value.role === 'Autodesk.CloudPlatform.PropertyDatabase' && value.mime === 'application/autodesk-db' && typeof value.urn === 'string' && (value.status === undefined || value.status === 'success'));
       const nearby = properties.filter(({ value }) => value.urn.startsWith(directory));
       const candidates = [...new Map((nearby.length ? nearby : properties).map(record => [derivativeUrn(record.value.urn, context), record])).values()];
@@ -400,7 +400,7 @@ export function createAPSProvider({ clientId, clientSecret, region, bucket, name
       }
       await record('output/0/0.svf', root.urn, raw.length, raw);
       for (const item of inspected.resources) {
-        if (!/^output\/0\/[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/.test(item.path) || !positive(item.bytes)) fail('UNSUPPORTED_PROFILE');
+        if (!/^output\/0\/[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/.test(item.path) || !positive(item.bytes)) { try { process.stderr.write(JSON.stringify({ event: 'svf-profile-rejected', reason: 'SVF download plan requires a nested resource path or an empty resource.' }) + '\n'); } catch {} fail('UNSUPPORTED_PROFILE'); }
         const urn = derivativeUrn(directory + item.path.slice('output/0/'.length), context);
         await record(item.path, urn, item.bytes);
       }
