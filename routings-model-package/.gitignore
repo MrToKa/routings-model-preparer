@@ -1,0 +1,6 @@
+artifacts/
+.staging/
+*.zip
+*.lock
+*.publication.json
+node_modules/
