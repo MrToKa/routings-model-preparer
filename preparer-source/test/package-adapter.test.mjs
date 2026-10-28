@@ -11,6 +11,7 @@ import { createPackageAdapter } from '../lib/package-adapter.mjs';
 import { CoreError, contextFromSpec, clone } from '../lib/contracts.mjs';
 import { writeZip, openZip } from '../../routings-model-package/lib/zip.mjs';
 import { tinyModel } from './fixtures/model-fixture.mjs';
+import { addRasterResource } from './fixtures/raster-fixture.mjs';
 
 const packageModulePath = fileURLToPath(new URL('../../routings-model-package/index.mjs', import.meta.url));
 const hash = data => createHash('sha256').update(data).digest('hex');
@@ -457,4 +458,39 @@ test('PNG download plan reaches the durable checkpoint before any provider read'
   assert.equal(checkpoint.status,'downloading');
   assert.equal(f.calls.plans,1);
   assert.equal(f.calls.resources.length,0);
+});
+
+async function nestedImageSetup(t, uri = '0 Texture Folder/Fixture Logo.png') {
+  const f = await setup(t), image = await addRasterResource(f.model.data, f.root, uri);
+  f.model.resources = [...f.model.data].map(([path, data], i) => ({ path, resourceId: 'nested-' + i, bytes: data.length, sha256: hash(data) }));
+  f.plan.resources = clone(f.model.resources);
+  return Object.assign(f, { image });
+}
+test('a nested raster download creates its declared parents before reading the resource', async t => {
+  const f = await nestedImageSetup(t);
+  f.provider.readResource = async function* () { throw new CoreError('LOCAL_ABORTED'); };
+  await rejects(() => f.adapter.download(f.job, { provider: f.provider, onCheckpoint: f.onCheckpoint }), 'LOCAL_ABORTED');
+  const directory = path.dirname(path.join(f.previous.modelDirectory, ...f.image.imagePath.split('/')));
+  assert.equal((await fs.stat(directory)).isDirectory(), true);
+});
+test('nested raster files with spaces survive download, descriptor inventory and public package verification', async t => {
+  const f = await nestedImageSetup(t);
+  const result = await f.adapter.download(f.job, { provider: f.provider, onCheckpoint: f.onCheckpoint });
+  assert.equal(result.download.status, 'downloaded');
+  assert.deepEqual(await fs.readFile(path.join(result.modelDirectory, ...f.image.imagePath.split('/'))), f.image.image);
+  assert.equal(JSON.parse(await fs.readFile(path.join(result.modelDirectory, 'model.json'), 'utf8')).resourceCount, 4);
+  const published = await f.adapter.buildPackage(f.job, { modelDirectory: result.modelDirectory });
+  assert.equal(published.status, 'PASS'); assert.equal((await f.adapter.registerPackage(published.path)).status, 'PASS');
+});
+for (const unsafe of ['output/0/../image.png', 'output/0/nested/../image.png', 'output/0/nested//image.png', 'output/0/nested/%2e%2e/image.png', 'output/0/nested\\image.png', 'output/0/nested /image.png', 'output/0/CON/image.png', 'output/0/nested/file name.pf']) {
+  test('nested image support refuses a noncanonical or non-image plan path: ' + unsafe, async t => {
+    const f = await setup(t); f.plan.resources.push({ path: unsafe, resourceId: 'bad-image', bytes: 42 });
+    await rejects(() => f.adapter.download(f.job, { provider: f.provider, onCheckpoint: f.onCheckpoint }), 'UNSAFE_PATH');
+    assert.equal(f.calls.resources.length, 0);
+  });
+}
+test('nested image plan rejects case-colliding directory names before writing', async t => {
+  const f = await setup(t); f.plan.resources.push({ path: 'output/0/Textures/a.png', resourceId: 'a-image', bytes: 42 }, { path: 'output/0/textures/b.png', resourceId: 'b-image', bytes: 42 });
+  await rejects(() => f.adapter.download(f.job, { provider: f.provider, onCheckpoint: f.onCheckpoint }), 'DOWNLOAD_INVALID');
+  assert.equal(f.calls.resources.length, 0);
 });

@@ -10,6 +10,7 @@ import { isAPSProvider } from '../lib/aps-capabilities.mjs';
 import { isFakeProvider } from '../lib/providers.mjs';
 import { contextFromSpec, CoreError, PROFILE } from '../lib/contracts.mjs';
 import { tinyModel } from './fixtures/model-fixture.mjs';
+import { addRasterResource } from './fixtures/raster-fixture.mjs';
 import * as packageApi from '../../routings-model-package/index.mjs';
 
 const hash = (value, algorithm = 'sha256') => createHash(algorithm).update(value).digest('hex');
@@ -43,13 +44,13 @@ async function fixture(t, overrides = {}) {
     if (url.pathname === '/modelderivative/v2/designdata/job') return json({ result: 'success', urn, acceptedJobs: { output: { formats: [{ type: 'svf', views: ['3d'] }] } } });
     if (url.pathname.endsWith('/signedcookies')) {
       const rawUrn = decodeURIComponent(url.pathname.split('/manifest/')[1].slice(0, -'/signedcookies'.length));
-      const filename = rawUrn.slice(rawUrn.lastIndexOf('/') + 1), raw = data.get('output/0/' + filename);
+      const filename = rawUrn.slice(rawUrn.indexOf('/output/0/') + '/output/0/'.length), raw = data.get('output/0/' + filename);
       assert.ok(raw, 'Only declared fixture resources may be signed');
       return json({ url: `https://cdn.derivative.autodesk.com/${urn}/output/0/${filename}`, size: raw.length, etag: 'fixture-etag', expiration: control.now + 5000 },
         { 'set-cookie': ['CloudFront-Policy=fixture-policy; Path=/', 'CloudFront-Signature=fixture-signature; Path=/', 'CloudFront-Key-Pair-Id=fixture-key; Path=/'] });
     }
     if (url.hostname === 'cdn.derivative.autodesk.com') {
-      const filename = path.posix.basename(url.pathname), raw = data.get('output/0/' + filename);
+      const filename = decodeURIComponent(url.pathname.slice(url.pathname.indexOf('/output/0/') + '/output/0/'.length)), raw = data.get('output/0/' + filename);
       if (control.forbiddenRaw && filename === '0.pf') { control.forbiddenRaw = false; return json({}, {}, 403); }
       return { statusCode: 200, headers: { 'content-length': String(raw.length), ...(filename === '0.pf' ? { 'content-encoding': 'gzip' } : {}) }, body: control.short && filename === '0.pf' ? raw.subarray(0, raw.length - 1) : raw };
     }
@@ -334,3 +335,19 @@ for (const [name, format] of [['SVF2', { type: 'svf2', views: ['3d'] }], ['2D', 
     assert.equal(f.calls.filter(call => call.url.endsWith('/job')).length, 1);
   });
 }
+
+test('a declared PNG folder and filename with spaces retain exact URIs, bytes and closure', async t => {
+  const f = await fixture(t), image = await addRasterResource(f.data, f.root);
+  const plan = await f.provider.getDownloadPlan(f.context);
+  const row = plan.resources.find(row => row.path === image.imagePath); assert.ok(row);
+  assert.deepEqual(await readAll(f.provider, f.context, row.resourceId), image.image);
+  const signedCalls = f.calls.filter(call => call.url.includes('/signedcookies'));
+  assert.ok(signedCalls.some(call => decodeURIComponent(new URL(call.url).pathname).includes('/Texture Folder/Fixture Logo.png/signedcookies')));
+  assert.ok(f.calls.some(call => call.url.includes('/Texture%20Folder/Fixture%20Logo.png')));
+  const downloaded = new Map();
+  for (const resource of plan.resources) downloaded.set('resources/' + resource.path, await readAll(f.provider, f.context, resource.resourceId));
+  const checked = await packageApi.validateProfile({ resources: plan.resources.map(row => ({ ...row, path: 'resources/' + row.path })),
+    read: async p => downloaded.get(p), stream: p => Readable.from([downloaded.get(p)]) });
+  assert.equal(checked.status, 'PASS'); assert.equal(f.provider.counts.cloudDataMutations, 0);
+  assert.deepEqual(downloaded.get('resources/output/0/0.svf'), image.svf);
+});

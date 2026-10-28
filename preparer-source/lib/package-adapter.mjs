@@ -20,9 +20,11 @@ function strict(value, fields, code = 'DOWNLOAD_INVALID') {
 }
 function bytes(value) { return Number.isSafeInteger(value) && value >= 0; }
 function resourcePath(value) {
-  if (typeof value !== 'string' || !/^output\/0\/[A-Za-z0-9._-]{1,255}$/.test(value)) fail('UNSAFE_PATH');
+  if (typeof value !== 'string' || value.length > 1014 || !/^output\/0\/[A-Za-z0-9._/ -]+$/.test(value)) fail('UNSAFE_PATH');
   const basename = value.slice('output/0/'.length);
-  if (basename === '.' || basename === '..' || /\.$/.test(basename) || /^\.env(?:\.|$)/i.test(basename) || RESERVED.test(basename)) fail('UNSAFE_PATH');
+  const segments = basename.split('/');
+  if (segments.length > 16 || segments.some(part => !part || part === '.' || part === '..' || part.length > 255 || /[. ]$/.test(part) || /^\.env(?:\.|$)/i.test(part) || RESERVED.test(part))) fail('UNSAFE_PATH');
+  if ((basename.includes('/') || basename.includes(' ')) && !/[.](?:png|jpe?g)$/i.test(basename)) fail('UNSAFE_PATH');
   if (!['0.svf', 'properties.db', 'Materials.json.gz', 'objects_attrs.json.gz', 'objects_avs.json.gz', 'objects_ids.json.gz', 'objects_offs.json.gz', 'objects_vals.json.gz', 'objects_viewables.json.gz'].includes(basename) && !/[.](?:png|jpe?g)$/i.test(basename) && !/\.(pf|bin|pack)$/.test(basename)) {
     try { process.stderr.write(JSON.stringify({ event: 'svf-profile-rejected', reason: 'Download plan contains an unsupported resource suffix.' }) + '\n'); } catch {}
     fail('UNSUPPORTED_PROFILE');
@@ -121,6 +123,16 @@ function validatePlan(plan, frozen, rootId, limits) {
     if (!Number.isSafeInteger(total) || total > limits.maxTotalResourceBytes) fail('PACKAGE_LIMIT_EXCEEDED');
     return { path: row.path, resourceId: row.resourceId, bytes: row.bytes, ...(row.sha256 === undefined ? {} : { sha256: row.sha256 }) };
   }).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  const prefixes = new Map();
+  for (const row of rows) {
+    const parts = row.path.split('/');
+    for (let at = 0; at < parts.length; at++) {
+      const prefix = parts.slice(0, at + 1).join('/'), directory = at < parts.length - 1;
+      const previous = prefixes.get(prefix.toLowerCase());
+      if (previous && (previous.path !== prefix || previous.directory !== directory)) invalid('resource-path-conflict');
+      prefixes.set(prefix.toLowerCase(), { path: prefix, directory });
+    }
+  }
   if (REQUIRED_PATHS.some(item => !rows.some(row => row.path === item))) fail('DOWNLOAD_INCOMPLETE');
   return { ...plan, resources: rows };
 }
@@ -198,6 +210,7 @@ export async function createPackageAdapter({ packageModulePath, packageApi, work
       for (const resource of plan.resources) {
         abortCheck(operationSignal);
         const filename = path.join(modelDirectory, ...resource.path.split('/'));
+        await inspectLocal(path.dirname(filename), { directory: true, create: true });
         let reusable = false;
         const checkpoint = state.checkpoints[resource.path];
         if (checkpoint && await optionalFile(filename)) {
@@ -243,9 +256,26 @@ export async function createPackageAdapter({ packageModulePath, packageApi, work
           await fs.rm(temporary, { force: true });
         }
       }
-      const expected = new Set(plan.resources.map(row => path.basename(row.path)));
-      const actualFiles = await fs.readdir(path.join(modelDirectory, 'output', '0'));
-      if (actualFiles.length !== expected.size || actualFiles.some(name => !expected.has(name))) fail('DOWNLOAD_INCOMPLETE');
+      const expected = new Set(plan.resources.map(row => row.path)), expectedDirectories = new Set();
+      for (const resource of expected) {
+        const parts = resource.split('/');
+        for (let at = 1; at < parts.length; at++) expectedDirectories.add(parts.slice(0, at).join('/'));
+      }
+      let actualFiles = 0;
+      async function inspectDirectory(relative) {
+        const directory = path.join(modelDirectory, ...relative.split('/'));
+        await inspectLocal(directory, { directory: true });
+        for (const name of await fs.readdir(directory)) {
+          const child = relative + '/' + name;
+          if (expectedDirectories.has(child)) await inspectDirectory(child);
+          else {
+            if (!expected.has(child)) fail('DOWNLOAD_INCOMPLETE');
+            await inspectLocal(path.join(modelDirectory, ...child.split('/'))); actualFiles++;
+          }
+        }
+      }
+      await inspectDirectory('output/0');
+      if (actualFiles !== expected.size) fail('DOWNLOAD_INCOMPLETE');
       const inventory = [];
       for (const row of plan.resources) {
         const result = await hashLocal(path.join(modelDirectory, ...row.path.split('/')), limits.maxFileBytes, operationSignal);
