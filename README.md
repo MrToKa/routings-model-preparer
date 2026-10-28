@@ -1,0 +1,47 @@
+# Routings Model Preparer
+
+Standalone Node.js 24 application for preparing, inspecting, verifying and exporting offline SVF model packages. This repository contains the source snapshot from the 20 October 2026 Simplified Preparer bundle.
+
+## Layout
+
+- **preparer-source/**: server, Bulgarian web interface, workflow core, Docker deployment and PowerShell scripts.
+- **routings-model-package/**: sibling package creation and verification module. Keep these directories together: the preparer resolves the package module relative to its own directory.
+
+Both modules use Node.js built-ins; no npm dependencies need installing. The package.json private flag prevents accidental npm publication; it does not control GitHub visibility.
+
+## Tests
+
+Use Node.js 24.x. From this repository:
+
+```powershell
+Push-Location .\routings-model-package
+npm test
+Pop-Location
+Push-Location .\preparer-source
+npm test
+Pop-Location
+```
+
+## Docker on Windows
+
+Install Docker Desktop with Linux containers, Node.js 24.x and PowerShell. Supply your existing Autodesk configuration file, import/source directories and legally obtained Autodesk Viewer SDK 7.130.0. The SDK is an external build input and is not distributed here.
+
+```powershell
+git clone https://github.com/MrToKa/routings-model-preparer.git
+cd routings-model-preparer\preparer-source
+.\start-preparer.ps1 -Build -EnvFilePath 'D:\ModelPreparerConfig\.env' -ImportRoot 'D:\PreparedModels' -SourceDirectory 'D:\SourceModels' -SdkSource 'D:\ViewerSDK\7.130.0'
+```
+
+Use existing directories. The configuration requires APS_CLIENT_ID, APS_CLIENT_SECRET, APS_REGION and APS_BUCKET. Keep credentials outside Git. The service defaults to closed mode and http://127.0.0.1:8083/.
+
+For subsequent starts, use the same runtime arguments without -Build. To update from this repository, run git pull --ff-only, then the build command with the same arguments and -Recreate. Preserve your existing runtime settings when updating an installed instance. A plain start reuses the existing image/container and does not deploy new source.
+
+Stop with .\stop-preparer.ps1 from preparer-source. Do not delete Docker volumes to update: they contain persistent application data.
+
+See [deployment documentation](preparer-source/deployment/README.md) and [application documentation](preparer-source/docs/app.md) for detailed configuration and live-mode requirements. In this standalone repository, startup defaults use local .env, imports, sources and deployment/preview-runtime/7.130.0 paths; explicit arguments override them. Older stage documentation describes the original deployment and its historical validation.
+
+## WFC integration and scope
+
+This is a separate application and Compose project (routings-preparer). Updating WFC does not update it. The source snapshot includes the optional workspace implementation; enabling its compose-workspace.yaml overlay also requires matching WFC server integration. The WFC integration patch and WFC code are not included in this repository, and compatibility with a current WFC deployment has not been verified here.
+
+Real models, SDK binaries, account evidence, runtime state, credentials and the original account-specific tools/record-cost-review.mjs utility are excluded. This repository does not grant rights to redistribute Autodesk software or model data. No software license has been selected for this initial import.
