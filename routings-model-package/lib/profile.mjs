@@ -57,6 +57,14 @@ function unsupported(message, details = {}) {
     if (typeof value === 'string' && /^[A-Za-z0-9 ._-]{1,80}$/.test(value)) technical[key] = value;
     else if (typeof value === 'number' && Number.isSafeInteger(value)) technical[key] = value;
   }
+  if (Number.isSafeInteger(details.assetIndex) && details.assetIndex >= 0) technical.assetIndex = details.assetIndex;
+  if (Array.isArray(details.invalidAssetFields)) technical.invalidAssetFields = details.invalidAssetFields.filter(key => ['id', 'type', 'URI', 'size', 'usize'].includes(key));
+  const safeType = value => typeof value === 'string' && /^(?:Autodesk[.]CloudPlatform[.][A-Za-z][A-Za-z0-9_]{0,80}|ProteinMaterials)$/.test(value);
+  if (safeType(details.assetType)) technical.assetType = details.assetType;
+  if (Array.isArray(details.unsupportedAssetTypes)) technical.unsupportedAssetTypes = details.unsupportedAssetTypes.filter(safeType).slice(0,32);
+  for (const key of ['size', 'usize']) {
+    if (Number.isSafeInteger(details[key])) technical[key] = details[key];
+  }
   try { process.stderr.write(JSON.stringify({ event: 'svf-profile-rejected', reason: message, ...technical }) + '\n'); } catch {}
   fail('UNSUPPORTED_PROFILE', message, details);
 }
@@ -188,7 +196,18 @@ function validateSvfManifest(value, resources, archive) {
   let embedded = 0;
   for (const asset of value.assets) {
     fields(asset, ['id', 'type', 'URI', 'size', 'usize'], ['typeset'], 'SVF asset');
-    if (!text(asset.id) || !text(asset.URI) || !ASSET_TYPES.includes(asset.type) || !size(asset.size) || !size(asset.usize)) unsupported('Invalid or unsupported SVF asset.');
+    const invalidAssetFields = [
+      ...(!text(asset.id) ? ['id'] : []),
+      ...(!text(asset.URI) ? ['URI'] : []),
+      ...(!ASSET_TYPES.includes(asset.type) ? ['type'] : []),
+      ...(!size(asset.size) ? ['size'] : []),
+      ...(!size(asset.usize) ? ['usize'] : []),
+    ];
+    if (invalidAssetFields.length) unsupported('Invalid or unsupported SVF asset.', {
+      assetIndex: value.assets.indexOf(asset), invalidAssetFields, assetType: asset.type,
+      size: asset.size, usize: asset.usize,
+      unsupportedAssetTypes: [...new Set(value.assets.map(item => item?.type).filter(type => !ASSET_TYPES.includes(type)))],
+    });
     if (ids.has(asset.id) || uris.has(asset.URI)) fail('INVALID_MANIFEST', 'Duplicate SVF asset ID or URI.');
     ids.add(asset.id); uris.add(asset.URI);
     if (Object.hasOwn(asset, 'typeset') && (!text(asset.typeset) || !typesets.has(asset.typeset))) unsupported('SVF asset has an absent or invalid typeset reference.');
