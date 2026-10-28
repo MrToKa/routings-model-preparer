@@ -70,6 +70,26 @@ test('explicit adapter construction performs no provider calls', async t => {
   await rejects(() => createPackageAdapter({ packageModulePath, packageApi: publicPackage, workDirectory: path.join(f.root, 'other') }), 'CONFIGURATION_INVALID');
 });
 
+for (const [check, mutate] of [
+  ['plan-fields', plan => { plan.privateUrl = 'https://private.invalid/?access_token=never-log'; }],
+  ['plan-header', plan => { plan.schemaVersion = 99; }],
+  ['resource-fields', plan => { plan.resources[0].privateUrl = 'https://private.invalid/?access_token=never-log'; }],
+  ['resource-identity', plan => { plan.resources[0].resourceId = 'https://private.invalid/?access_token=never-log'; }],
+  ['resource-metadata', plan => { plan.resources[0].bytes = -1; }],
+  ['duplicate-resource', plan => { plan.resources.push({ ...plan.resources[0] }); }],
+]) {
+  test(`invalid plan diagnostics identify ${check} before resource IO without leaking private values`, async t => {
+    const logs = []; t.mock.method(process.stderr, 'write', value => { logs.push(JSON.parse(String(value))); return true; });
+    const f = await setup(t); mutate(f.plan);
+    await rejects(() => f.adapter.download(f.job, { provider: f.provider, onCheckpoint: f.onCheckpoint }), 'DOWNLOAD_INVALID');
+    assert.equal(f.calls.resources.length, 0);
+    assert.equal(logs.length, 1); assert.equal(logs[0].event, 'download-plan-rejected');
+    assert.equal(logs[0].check, check); assert.equal(logs[0].submissionIdentity, f.job.frozen.submissionIdentity);
+    assert.equal(JSON.stringify(logs).includes('private.invalid'), false);
+    assert.equal(JSON.stringify(logs).includes('access_token'), false);
+  });
+}
+
 test('small raw model downloads, uses public packModel and independently verifies the package', async t => {
   const f = await setup(t);
   const result = await f.adapter.download(f.job, { provider: f.provider, onCheckpoint: f.onCheckpoint });

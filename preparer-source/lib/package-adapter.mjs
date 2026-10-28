@@ -98,20 +98,25 @@ async function abortable(promise, signal) {
 }
 
 function validatePlan(plan, frozen, rootId, limits) {
-  strict(plan, FIELDS);
-  if (FIELDS.some(key => !Object.hasOwn(plan, key)) || plan.schemaVersion !== 1 || plan.supportProfile !== PROFILE || !Array.isArray(plan.resources)) fail('DOWNLOAD_INVALID');
+  function invalid(check, facts = {}) {
+    try { process.stderr.write(JSON.stringify({ event: 'download-plan-rejected', submissionIdentity: frozen.submissionIdentity, check, ...facts }) + '\n'); } catch {}
+    fail('DOWNLOAD_INVALID');
+  }
+  try { strict(plan, FIELDS); } catch { invalid('plan-fields'); }
+  if (FIELDS.some(key => !Object.hasOwn(plan, key)) || plan.schemaVersion !== 1 || plan.supportProfile !== PROFILE || !Array.isArray(plan.resources)) invalid('plan-header');
   for (const key of ['submissionIdentity', 'objectId', 'urn', 'region']) if (plan[key] !== frozen[key]) fail('IDENTITY_MISMATCH');
   if (plan.rootId !== rootId) fail('IDENTITY_MISMATCH');
   if (plan.resources.length === 0 || plan.resources.length > limits.maxFiles) fail('PACKAGE_LIMIT_EXCEEDED');
   let total = 0;
   const seen = new Set(), refs = new Set();
-  const rows = plan.resources.map(row => {
-    strict(row, ['path', 'resourceId', 'bytes', 'sha256']);
-    resourcePath(row.path); identifier(row.resourceId, 'DOWNLOAD_INVALID');
-    if (!bytes(row.bytes) || (row.sha256 !== undefined && !SHA.test(row.sha256))) fail('DOWNLOAD_INVALID');
+  const rows = plan.resources.map((row, resourceIndex) => {
+    try { strict(row, ['path', 'resourceId', 'bytes', 'sha256']); } catch { invalid('resource-fields', { resourceIndex }); }
+    resourcePath(row.path);
+    try { identifier(row.resourceId, 'DOWNLOAD_INVALID'); } catch { invalid('resource-identity', { resourceIndex }); }
+    if (!bytes(row.bytes) || (row.sha256 !== undefined && !SHA.test(row.sha256))) invalid('resource-metadata', { resourceIndex });
     if (row.bytes > limits.maxFileBytes) fail('PACKAGE_LIMIT_EXCEEDED');
     const key = row.path.toLowerCase();
-    if (seen.has(key) || refs.has(row.resourceId)) fail('DOWNLOAD_INVALID');
+    if (seen.has(key) || refs.has(row.resourceId)) invalid('duplicate-resource', { resourceIndex, duplicatePath: seen.has(key), duplicateIdentity: refs.has(row.resourceId) });
     seen.add(key); refs.add(row.resourceId); total += row.bytes;
     if (!Number.isSafeInteger(total) || total > limits.maxTotalResourceBytes) fail('PACKAGE_LIMIT_EXCEEDED');
     return { path: row.path, resourceId: row.resourceId, bytes: row.bytes, ...(row.sha256 === undefined ? {} : { sha256: row.sha256 }) };

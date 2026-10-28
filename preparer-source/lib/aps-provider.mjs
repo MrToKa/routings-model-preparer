@@ -12,10 +12,32 @@ const JSON_CAP = 4 * 1024 * 1024;
 const RAW_CAP = 2 * 1024 ** 3;
 const TOTAL_CAP = 8 * 1024 ** 3;
 const TIMEOUT = 120000;
+const INSPECTION_CHECKS = new Map([
+  ['Duplicate SVF asset ID or URI.', 'duplicate-svf-asset'],
+  ['Duplicate JSON object key.', 'duplicate-json-key'],
+  ['Nested JSON is not valid UTF-8.', 'json-encoding'],
+  ['Embedded compressed/uncompressed metadata sizes do not match its ZIP entry.', 'embedded-metadata-size'],
+  ['SVF embedded metadata.json is absent.', 'embedded-metadata-missing'],
+  ['Required embedded SVF entry is absent.', 'embedded-entry-missing'],
+  ['SVF must declare exactly one embed:/metadata.json asset.', 'embedded-metadata-declaration'],
+  ['SVF asset raw size differs from the portable resource record.', 'asset-declaration-size'],
+  ['A declared SVF sibling resource is missing.', 'asset-declaration-missing'],
+  ['A resource is outside the supported SVF closure.', 'asset-closure'],
+  ['SVF loader URI must not contain a scheme or network destination.', 'external-asset-uri'],
+  ['SVF loader URI must be a canonical sibling basename.', 'asset-basename'],
+  ['ZIP entry actual size differs from its metadata.', 'zip-entry-size'],
+  ['ZIP entry inflated beyond its declared size.', 'zip-entry-overflow'],
+  ['ZIP entry CRC-32 mismatch.', 'zip-entry-crc'],
+]);
 const sha = value => createHash('sha256').update(value).digest('hex');
 const header = (response, name) => Object.entries(response.headers ?? {}).find(([key]) => key.toLowerCase() === name)?.[1];
 function validHash(value) { return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value); }
 function positive(value) { return Number.isSafeInteger(value) && value > 0; }
+// Diagnostics contain only locally selected checks, opaque identities and byte
+// counts. Provider messages, resource names, URLs and credentials stay private.
+function diagnostic(event, context, check, facts = {}) {
+  try { process.stderr.write(JSON.stringify({ event, submissionIdentity: context.submissionIdentity, check, ...facts }) + '\n'); } catch {}
+}
 function privateError(status) { const error = new CoreError('PROVIDER_FAILURE'); if (Number.isInteger(status)) error.httpStatus = status; return error; }
 function checkedUrl(value, { apiOnly = false, upload = false } = {}) {
   let url; try { url = new URL(value); } catch { fail('PROVIDER_RESPONSE_INVALID'); }
@@ -239,8 +261,10 @@ export function createAPSProvider({ clientId, clientSecret, region, bucket, name
     if (manifest.urn !== target.urn) fail('IDENTITY_MISMATCH');
     let records = flatten(manifest), candidates = records.filter(({ value, ancestors }) => value.mime === 'application/autodesk-svf' && typeof value.urn === 'string' && (value.role === '3d' || ancestors.some(parent => parent.role === '3d')));
     // Read an already existing Viewer SVF representation; never create SVF2 or
-    // submit an additional fallback conversion. This path is explicit/configured.
-    if (!candidates.length && manifest.status === 'success' && reuseOnly && allowLegacyExistingSVF) {
+    // submit an additional fallback conversion. Discovery is controlled by its
+    // own option; permission to submit new jobs must not disable existing SVFs.
+    const legacyAttempted = !candidates.length && manifest.status === 'success' && allowLegacyExistingSVF;
+    if (legacyAttempted) {
       const endpoint = region === 'EMEA' ? '/derivativeservice/v2/regions/eu/manifest/' : '/derivativeservice/v2/manifest/';
       const legacy = await apiJson(context, endpoint + target.urn, { signal, recoverDead });
       if (legacy.urn !== undefined && legacy.urn !== target.urn && legacy.urn !== target.objectId) fail('IDENTITY_MISMATCH');
@@ -260,7 +284,10 @@ export function createAPSProvider({ clientId, clientSecret, region, bucket, name
       seenRootUrns.add(urn);
       roots.push({ rootId: 'aps-root-' + sha(urn), urn, ancestors: record.ancestors });
     }
-    if (status === 'success' && roots.length === 0) fail('UNSUPPORTED_PROFILE');
+    if (status === 'success' && roots.length === 0) {
+      diagnostic('aps-manifest-rejected', context, 'no-supported-svf-root', { legacyAttempted, candidateCount: candidates.length });
+      fail('UNSUPPORTED_PROFILE');
+    }
     if (new Set(roots.map(root => root.rootId)).size !== roots.length) fail('PROVIDER_RESPONSE_INVALID');
     rootsByContext.set(context.submissionIdentity, { status, roots, records });
     return { status, roots, records };
@@ -288,7 +315,12 @@ export function createAPSProvider({ clientId, clientSecret, region, bucket, name
     // No arbitrary redirect/proxy is followed, and credentials never cross hosts.
     if (response?.statusCode !== 200) { destroy(response); throw privateError(response?.statusCode); }
     const length = header(response, 'content-length');
-    if (length !== undefined && Number(length) !== signed.bytes) { destroy(response); fail('DOWNLOAD_INVALID'); }
+    if (length !== undefined && Number(length) !== signed.bytes) {
+      destroy(response);
+      diagnostic('aps-download-rejected', context, 'response-content-length', { signedBytes: signed.bytes,
+        ...(Number.isSafeInteger(Number(length)) && Number(length) >= 0 ? { responseBytes: Number(length) } : {}) });
+      fail('DOWNLOAD_INVALID');
+    }
     return response;
   }
   async function rawBytes(context, signed, signal, maxBytes, recoverDead) {
@@ -379,6 +411,14 @@ export function createAPSProvider({ clientId, clientSecret, region, bucket, name
       try { inspected = await packageApi.inspectSvfEnvelope(raw, { signal }); }
       catch (error) {
         abortCheck(signal);
+        // Package error messages are deliberately not copied. Even a foreign
+        // injected inspector cannot put private text in the container log.
+        const known = ['UNSUPPORTED_PROFILE', 'PACKAGE_LIMIT_EXCEEDED', 'INVALID_MANIFEST', 'GZIP_INVALID', 'EXECUTABLE_CONTENT',
+          'UNSAFE_PATH', 'EXTERNAL_REFERENCE', 'RESOURCE_MISSING', 'RESOURCE_UNEXPECTED',
+          'RESOURCE_SIZE_MISMATCH', 'RESOURCE_HASH_MISMATCH', 'PACKAGE_ABORTED'];
+        diagnostic('aps-download-rejected', context, 'svf-envelope', {
+          causeCode: known.includes(error?.code) ? error.code : 'INSPECTION_FAILED',
+          ...(INSPECTION_CHECKS.has(error?.message) ? { causeCheck: INSPECTION_CHECKS.get(error.message) } : {}), svfBytes: raw.length });
         fail(error?.code === 'UNSUPPORTED_PROFILE' ? 'UNSUPPORTED_PROFILE' : error?.code === 'PACKAGE_LIMIT_EXCEEDED' ? 'PACKAGE_LIMIT_EXCEEDED' : 'DOWNLOAD_INVALID');
       }
       if (inspected.supportProfile !== PROFILE || inspected.resourceClosureVerified !== false || !Array.isArray(inspected.resources)) { try { process.stderr.write(JSON.stringify({ event: 'svf-profile-rejected', reason: 'SVF inspector returned an incompatible profile contract.' }) + '\n'); } catch {} fail('UNSUPPORTED_PROFILE'); }
@@ -391,10 +431,17 @@ export function createAPSProvider({ clientId, clientSecret, region, bucket, name
       let total = 0;
       async function record(resourcePath, urn, declaredBytes, cached) {
         const sign = cached ? signed : await signedResource(context, urn, signal, recoverDead);
-        if (declaredBytes !== undefined && sign.bytes !== declaredBytes) fail('DOWNLOAD_INVALID');
+        if (declaredBytes !== undefined && sign.bytes !== declaredBytes) {
+          diagnostic('aps-download-rejected', context, 'declared-resource-size', {
+            resourceIndex: records.length, declaredBytes, signedBytes: sign.bytes });
+          fail('DOWNLOAD_INVALID');
+        }
         total += sign.bytes; if (total > TOTAL_CAP || records.length >= 100000) fail('PACKAGE_LIMIT_EXCEEDED');
         const resourceId = 'aps-resource-' + sha(urn);
-        if (privateRecords.has(resourceId) || records.some(item => item.path === resourcePath)) fail('DOWNLOAD_INVALID');
+        if (privateRecords.has(resourceId) || records.some(item => item.path === resourcePath)) {
+          diagnostic('aps-download-rejected', context, 'duplicate-resource', { resourceIndex: records.length });
+          fail('DOWNLOAD_INVALID');
+        }
         privateRecords.set(resourceId, { urn, signed: sign, bytes: sign.bytes, ...(cached ? { cached } : {}) });
         records.push({ path: resourcePath, resourceId, bytes: sign.bytes, ...(cached ? { sha256: sha(cached) } : {}) });
       }

@@ -120,6 +120,96 @@ test('existing SVF2 manifest uses only explicit legacy SVF reads without convers
   assert.ok(f.calls.some(call => call.url.includes('/derivativeservice/v2/regions/eu/manifest/')));
   assert.equal(f.calls.filter(call => call.method !== 'GET' && !call.url.endsWith('/authentication/v2/token')).length, 0);
 });
+test('production submission permissions preserve existing legacy SVF discovery without a new conversion', async t => {
+  const f = await fixture(t, { providerOptions: { reuseOnly: false }, reply: async (input, h) => {
+    if (input.url.includes('/modelderivative/') && input.url.endsWith('/manifest')) return json({ urn: h.urn, status: 'success', derivatives: [{ outputType: 'svf2', status: 'success', children: [] }] });
+    return h.defaultReply(input);
+  } });
+  const observation = await f.provider.getManifest(f.context);
+  assert.equal(observation.status, 'success'); assert.equal(observation.roots.length, 1);
+  const plan = await f.provider.getDownloadPlan(f.context, { rootId: observation.roots[0].rootId });
+  assert.equal(plan.resources.length, 3);
+  assert.equal(f.calls.filter(call => call.url.includes('/derivativeservice/v2/regions/eu/manifest/')).length, 2);
+  assert.equal(f.provider.counts.cloudDataMutations, 0);
+  assert.equal(f.calls.some(call => call.method === 'PUT' || call.url.endsWith('/job')), false);
+});
+for (const reuseOnly of [false, true]) {
+  test(`legacy discovery can be disabled independently of submission permissions (${reuseOnly})`, async t => {
+    const logs = []; t.mock.method(process.stderr, 'write', value => { logs.push(JSON.parse(String(value))); return true; });
+    const f = await fixture(t, { providerOptions: { reuseOnly, allowLegacyExistingSVF: false }, reply: async (input, h) => {
+      if (input.url.includes('/modelderivative/') && input.url.endsWith('/manifest')) return json({ urn: h.urn, status: 'success', derivatives: [{ outputType: 'svf2', status: 'success', children: [] }] });
+      return h.defaultReply(input);
+    } });
+    await rejects(f.provider.getManifest(f.context), 'UNSUPPORTED_PROFILE');
+    assert.equal(f.calls.some(call => call.url.includes('/derivativeservice/')), false);
+    assert.equal(f.provider.counts.cloudDataMutations, 0);
+    assert.deepEqual(logs, [{ event: 'aps-manifest-rejected', submissionIdentity: f.context.submissionIdentity,
+      check: 'no-supported-svf-root', legacyAttempted: false, candidateCount: 0 }]);
+  });
+}
+for (const status of ['pending', 'inprogress', 'failed']) {
+  test(`production discovery preserves a ${status} manifest without a fallback conversion`, async t => {
+    const f = await fixture(t, { providerOptions: { reuseOnly: false }, reply: async (input, h) => {
+      if (input.url.includes('/modelderivative/') && input.url.endsWith('/manifest')) return json({ urn: h.urn, status, derivatives: [] });
+      return h.defaultReply(input);
+    } });
+    const observation = await f.provider.getManifest(f.context);
+    assert.equal(observation.status, status);
+    assert.equal(f.calls.some(call => call.url.includes('/derivativeservice/')), false);
+    assert.equal(f.provider.counts.cloudDataMutations, 0);
+  });
+}
+test('download diagnostics distinguish a signed-size mismatch without disclosing a resource name', async t => {
+  const logs = []; t.mock.method(process.stderr, 'write', value => { logs.push(JSON.parse(String(value))); return true; });
+  const f = await fixture(t, { providerOptions: { packageApi: { ...packageApi, inspectSvfEnvelope: async (...args) => {
+    const value = await packageApi.inspectSvfEnvelope(...args); value.resources[0].bytes++; return value;
+  } } } });
+  await rejects(f.provider.getDownloadPlan(f.context), 'DOWNLOAD_INVALID');
+  assert.deepEqual(logs, [{ event: 'aps-download-rejected', submissionIdentity: f.context.submissionIdentity,
+    check: 'declared-resource-size', resourceIndex: 1, declaredBytes: 42, signedBytes: 41 }]);
+  assert.equal(f.provider.counts.cloudDataMutations, 0);
+});
+test('download diagnostics distinguish an HTTP length mismatch before inspecting SVF bytes', async t => {
+  const logs = []; t.mock.method(process.stderr, 'write', value => { logs.push(JSON.parse(String(value))); return true; });
+  const f = await fixture(t, { reply: async (input, h) => {
+    const response = await h.defaultReply(input);
+    if (new URL(input.url).hostname === 'cdn.derivative.autodesk.com') response.headers['content-length'] = String(response.body.length + 1);
+    return response;
+  } });
+  await rejects(f.provider.getDownloadPlan(f.context), 'DOWNLOAD_INVALID');
+  assert.deepEqual(logs, [{ event: 'aps-download-rejected', submissionIdentity: f.context.submissionIdentity,
+    check: 'response-content-length', signedBytes: f.data.get('output/0/0.svf').length,
+    responseBytes: f.data.get('output/0/0.svf').length + 1 }]);
+});
+test('download diagnostics preserve a package cause code and exclude foreign messages and details', async t => {
+  const logs = []; t.mock.method(process.stderr, 'write', value => { logs.push(JSON.parse(String(value))); return true; });
+  const privateText = 'https://private.invalid/model.nwd?access_token=never-log';
+  const f = await fixture(t, { providerOptions: { packageApi: { ...packageApi, inspectSvfEnvelope: async () => {
+    throw new packageApi.PackageError('INVALID_MANIFEST', privateText, { path: privateText });
+  } } } });
+  await rejects(f.provider.getDownloadPlan(f.context), 'DOWNLOAD_INVALID');
+  assert.deepEqual(logs, [{ event: 'aps-download-rejected', submissionIdentity: f.context.submissionIdentity,
+    check: 'svf-envelope', causeCode: 'INVALID_MANIFEST', svfBytes: f.data.get('output/0/0.svf').length }]);
+  assert.equal(JSON.stringify(logs).includes(privateText), false);
+});
+test('download diagnostics reject duplicate resource identities before returning a plan', async t => {
+  const logs = []; t.mock.method(process.stderr, 'write', value => { logs.push(JSON.parse(String(value))); return true; });
+  const f = await fixture(t, { providerOptions: { packageApi: { ...packageApi, inspectSvfEnvelope: async (...args) => {
+    const value = await packageApi.inspectSvfEnvelope(...args); value.resources.push({ ...value.resources[0] }); return value;
+  } } } });
+  await rejects(f.provider.getDownloadPlan(f.context), 'DOWNLOAD_INVALID');
+  assert.deepEqual(logs, [{ event: 'aps-download-rejected', submissionIdentity: f.context.submissionIdentity,
+    check: 'duplicate-resource', resourceIndex: 2 }]);
+});
+test('download diagnostics identify a known SVF validation check using only a fixed technical label', async t => {
+  const logs = []; t.mock.method(process.stderr, 'write', value => { logs.push(JSON.parse(String(value))); return true; });
+  const f = await fixture(t, { providerOptions: { packageApi: { ...packageApi, inspectSvfEnvelope: async () => {
+    throw new packageApi.PackageError('INVALID_MANIFEST', 'Duplicate SVF asset ID or URI.', { URI: 'private-model-resource' });
+  } } } });
+  await rejects(f.provider.getDownloadPlan(f.context), 'DOWNLOAD_INVALID');
+  assert.deepEqual(logs, [{ event: 'aps-download-rejected', submissionIdentity: f.context.submissionIdentity,
+    check: 'svf-envelope', causeCode: 'INVALID_MANIFEST', causeCheck: 'duplicate-svf-asset', svfBytes: f.data.get('output/0/0.svf').length }]);
+});
 function legacyBranches(h, { foreignSecondRoot = false } = {}) {
   const branch = foreign => ({ type: 'folder', role: 'viewable', children: [{ type: 'folder', role: 'viewable', children: [{
     type: 'geometry', role: '3d', children: [
