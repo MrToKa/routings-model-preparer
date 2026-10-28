@@ -117,7 +117,7 @@
           "type": "string",
           "minLength": 11,
           "maxLength": 1024,
-          "pattern": "^resources/[A-Za-z0-9._/-]+(?:\\.svf|\\.pf|\\.bin|\\.pack|\\.json\\.gz|\\.db|\\.[pP][nN][gG]|\\.[jJ][pP][eE]?[gG])$"
+          "pattern": "^(?:resources/[A-Za-z0-9._/-]+(?:\\.svf|\\.pf|\\.bin|\\.pack|\\.json\\.gz|\\.db)|resources/output/0/[A-Za-z0-9._/ -]+(?:\\.[pP][nN][gG]|\\.[jJ][pP][eE]?[gG]))$"
         },
         "bytes": {
           "type": "integer",

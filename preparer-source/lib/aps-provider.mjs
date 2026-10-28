@@ -33,6 +33,12 @@ const sha = value => createHash('sha256').update(value).digest('hex');
 const header = (response, name) => Object.entries(response.headers ?? {}).find(([key]) => key.toLowerCase() === name)?.[1];
 function validHash(value) { return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value); }
 function positive(value) { return Number.isSafeInteger(value) && value > 0; }
+function imageResourcePath(value) {
+  if (typeof value !== 'string' || value.length > 1014 || !/^output\/0\/[A-Za-z0-9._/ -]+\.(png|jpe?g)$/i.test(value)) return false;
+  const parts = value.slice('output/0/'.length).split('/');
+  return parts.length <= 16 && parts.every(part => part && part !== '.' && part !== '..' && part.length <= 255 &&
+    !/[. ]$/.test(part) && !/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(part) && !/^\.env(?:\.|$)/i.test(part));
+}
 // Diagnostics contain only locally selected checks, opaque identities and byte
 // counts. Provider messages, resource names, URLs and credentials stay private.
 function diagnostic(event, context, check, facts = {}) {
@@ -242,9 +248,10 @@ export function createAPSProvider({ clientId, clientSecret, region, bucket, name
   }
   function derivativeUrn(value, context) {
     const prefix = 'urn:adsk.viewing:fs.file:' + actual(context).urn + '/';
-    if (typeof value !== 'string' || !value.startsWith(prefix) || value.length > 4096 || /[\x00-\x20\x7f?#]/.test(value)) fail('PROVIDER_RESPONSE_INVALID');
+    if (typeof value !== 'string' || !value.startsWith(prefix) || value.length > 4096 || /[\x00-\x1f\x7f?#]/.test(value)) fail('PROVIDER_RESPONSE_INVALID');
     const suffix = value.slice(prefix.length);
-    if (!/^output\/[A-Za-z0-9._/-]+$/.test(suffix) || suffix.split('/').some(part => !part || part === '.' || part === '..')) fail('UNSAFE_PATH');
+    if (!/^output\/[A-Za-z0-9._/ -]+$/.test(suffix) || suffix.split('/').some(part => !part || part === '.' || part === '..' || part.length > 255 || /[. ]$/.test(part))) fail('UNSAFE_PATH');
+    if (suffix.includes(' ') && !/\.(png|jpe?g)$/i.test(suffix)) fail('UNSAFE_PATH');
     return value;
   }
   function flatten(value, ancestors = [], result = []) {
@@ -447,7 +454,7 @@ export function createAPSProvider({ clientId, clientSecret, region, bucket, name
       }
       await record('output/0/0.svf', root.urn, raw.length, raw);
       for (const item of inspected.resources) {
-        if (!/^output\/0\/[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/.test(item.path) || !positive(item.bytes)) { try { process.stderr.write(JSON.stringify({ event: 'svf-profile-rejected', reason: 'SVF download plan requires a nested resource path or an empty resource.' }) + '\n'); } catch {} fail('UNSUPPORTED_PROFILE'); }
+        if ((!/^output\/0\/[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/.test(item.path) && !(item.assetType === 'Autodesk.CloudPlatform.Image' && imageResourcePath(item.path))) || !positive(item.bytes)) { try { process.stderr.write(JSON.stringify({ event: 'svf-profile-rejected', reason: 'SVF download plan requires an unsupported resource path or an empty resource.' }) + '\n'); } catch {} fail('UNSUPPORTED_PROFILE'); }
         const urn = derivativeUrn(directory + item.path.slice('output/0/'.length), context);
         await record(item.path, urn, item.bytes);
       }

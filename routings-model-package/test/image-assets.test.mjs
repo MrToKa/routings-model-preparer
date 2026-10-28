@@ -58,6 +58,8 @@ for(const [label,options] of [
  ['JPEG',{name:'texture.jpg',image:jpeg()}],
  ['progressive JPEG',{name:'texture.jpeg',image:jpeg({progressive:true})}],
  ['one-byte PNG stream',{chunkBytes:1}],
+ ['PNG in a folder with spaces',{name:'Texture Folder/Fixture Logo.png',image:png()}],
+ ['JPEG in nested folders with spaces',{name:'Texture Folder/Scene/Fixture Image.jpg',image:jpeg()}],
 ]) {
   test('manifest-declared image survives inspection, closure and portable verification: '+label,async t=>{
     const f=await fixture(t,options),before=Buffer.from(f.svf);
@@ -90,7 +92,7 @@ for(const [label,options,code] of [
     await assert.rejects(validateProfile(f.provider),{code});
   });
 }
-for(const uri of ['https://example.invalid/texture.png','../texture.png','nested/texture.png']) {
+for(const uri of ['https://example.invalid/texture.png','../texture.png','nested/../texture.png','nested//texture.png','nested/./texture.png','nested\\texture.png','nested/%2e%2e/texture.png','nested/texture.png?key=value','CON/texture.png','nested./texture.png','nested /texture.png']) {
   test('image discovery rejects unsafe dependency '+uri,async t=>{
     const f=await fixture(t,{uri});
     await assert.rejects(inspectSvfEnvelope(f.svf),{code:uri.startsWith('https:')?'EXTERNAL_REFERENCE':'UNSAFE_PATH'});
