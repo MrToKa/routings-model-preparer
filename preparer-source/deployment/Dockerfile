@@ -9,5 +9,5 @@ RUN node -e "if (process.versions.node.split('.')[0] !== '24') process.exit(1)" 
     && chown -R node:node /var/lib/preparer
 USER node
 EXPOSE 8080
-HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=6 CMD node -e "fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=6 CMD node -e "fetch('http://127.0.0.1:8080/health',{headers:{Host:new URL(process.env.PREPARER_PUBLIC_ORIGIN||'http://127.0.0.1:8080').host},signal:AbortSignal.timeout(4000)}).then(r=>{if(!r.ok)console.error('Health HTTP '+r.status);process.exit(r.ok?0:1)}).catch(()=>{console.error('Health request failed');process.exit(1)})"
 CMD ["node", "app/server.mjs"]
