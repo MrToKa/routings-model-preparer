@@ -20,12 +20,13 @@ packages using these image paths can be imported. Viewer HTTP decoding already
 preserves a nested path with percent-encoded spaces and resolves only a resource
 listed in the verified manifest.
 
-Validation before the execution environment became unavailable:
-- 51 package image and inspection tests passed, including nested PNG/JPEG paths
-  with spaces and portable package verification.
-- 43 additional pure JavaScript path acceptance/rejection checks passed.
-- All 12 baseline vendor runtime files matched their pinned SHA-256 inventories.
+Validation in the pinned Node 24 Linux CI container:
+- 51 package image/inspection tests passed, including nested PNG/JPEG resources
+  with spaces and portable verification.
+- 96 provider/adapter tests passed, including exact URN signing, nested download
+  directories, recursive inventory and complete package publication.
+- The WFC companion passed 32 verifier regressions, 25 HTTP boundary tests and
+  the server build with pinned-runtime-copy validation.
 
-Still required: Node provider/adapter tests, WFC source/build validation and a
-desktop production retry. The new provider/adapter regression tests are included.
-This change is a draft until those checks complete.
+Desktop production completion is checked by rebuilding both applications and
+resuming the existing operation. The regression fixtures contain synthetic data.
