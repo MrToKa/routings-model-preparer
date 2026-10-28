@@ -9,5 +9,5 @@ RUN node -e "if (process.versions.node.split('.')[0] !== '24') process.exit(1)" 
     && chown -R node:node /var/lib/preparer
 USER node
 EXPOSE 8080
-HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=6 CMD node -e "fetch('http://127.0.0.1:8080/health',{headers:{Host:new URL(process.env.PREPARER_PUBLIC_ORIGIN||'http://127.0.0.1:8080').host},signal:AbortSignal.timeout(4000)}).then(r=>{if(!r.ok)console.error('Health HTTP '+r.status);process.exit(r.ok?0:1)}).catch(()=>{console.error('Health request failed');process.exit(1)})"
+HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=6 CMD node -e "const http=require('node:http');const host=new URL(process.env.PREPARER_PUBLIC_ORIGIN||'http://127.0.0.1:8080').host;const req=http.get('http://127.0.0.1:8080/health',{headers:{Host:host}},res=>{const ok=res.statusCode>=200&&res.statusCode<300;if(!ok)console.error('Health HTTP '+res.statusCode);res.on('end',()=>process.exit(ok?0:1));res.resume();});req.setTimeout(4000,()=>req.destroy(new Error('timeout')));req.on('error',()=>{console.error('Health request failed');process.exit(1);});"
 CMD ["node", "app/server.mjs"]
