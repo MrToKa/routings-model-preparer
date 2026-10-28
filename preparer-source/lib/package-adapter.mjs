@@ -23,7 +23,10 @@ function resourcePath(value) {
   if (typeof value !== 'string' || !/^output\/0\/[A-Za-z0-9._-]{1,255}$/.test(value)) fail('UNSAFE_PATH');
   const basename = value.slice('output/0/'.length);
   if (basename === '.' || basename === '..' || /\.$/.test(basename) || /^\.env(?:\.|$)/i.test(basename) || RESERVED.test(basename)) fail('UNSAFE_PATH');
-  if (!['0.svf', 'properties.db', 'Materials.json.gz', 'objects_attrs.json.gz', 'objects_avs.json.gz', 'objects_ids.json.gz', 'objects_offs.json.gz', 'objects_vals.json.gz', 'objects_viewables.json.gz'].includes(basename) && !/\.(pf|bin|pack)$/.test(basename)) fail('UNSUPPORTED_PROFILE');
+  if (!['0.svf', 'properties.db', 'Materials.json.gz', 'objects_attrs.json.gz', 'objects_avs.json.gz', 'objects_ids.json.gz', 'objects_offs.json.gz', 'objects_vals.json.gz', 'objects_viewables.json.gz'].includes(basename) && !/\.(pf|bin|pack)$/.test(basename)) {
+    try { process.stderr.write(JSON.stringify({ event: 'svf-profile-rejected', reason: 'Download plan contains an unsupported resource suffix.' }) + '\n'); } catch {}
+    fail('UNSUPPORTED_PROFILE');
+  }
   return value;
 }
 
