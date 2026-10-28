@@ -18,3 +18,6 @@ node_modules/
 *.log
 *.tmp
 *.part
+
+# External Autodesk Viewer SDK input; never commit vendor assets.
+**/vendor/viewer/

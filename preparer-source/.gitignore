@@ -14,3 +14,6 @@ deployment/preview-runtime/
 deployment/build-contexts/
 *.tar
 *.log
+
+# External Autodesk Viewer SDK input; never commit vendor assets.
+**/vendor/viewer/

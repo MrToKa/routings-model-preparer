@@ -11,7 +11,7 @@ param(
     [switch]$AllowNewCloudPreparation,
     [string]$Image = 'routings-model-preparer:stage3',
     [string]$PackageRoot,
-    [string]$SdkSource = (Join-Path $PSScriptRoot 'deployment\preview-runtime\7.130.0'),
+    [string]$SdkSource = (Join-Path $PSScriptRoot 'vendor\viewer\7.130.0'),
     [string]$NodeBase = 'node@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5',
     [switch]$Build,
     [switch]$Recreate,

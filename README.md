@@ -24,7 +24,7 @@ Pop-Location
 
 ## Docker on Windows
 
-Install Docker Desktop with Linux containers, Node.js 24.x and PowerShell. Supply your existing Autodesk configuration file, import/source directories and legally obtained Autodesk Viewer SDK 7.130.0. The SDK is an external build input and is not distributed here.
+Install Docker Desktop with Linux containers, Node.js 24.x and PowerShell. Supply your existing Autodesk configuration file, import/source directories and the original trusted Autodesk Viewer SDK 7.130.0 source bundle, including its vendor-manifest.json. The SDK is an external build input and is not distributed here. prepare-runtime.mjs pins the manifest SHA-256 to 747540a153fb18809c428d8ed177aa8a296cff1b5175ab85445e0a2ebdb36d75 and verifies all 206 declared assets. A generic 7.130.0 download without this inventory cannot satisfy the build. Use the original SDK source bundle; do not point -SdkSource at the generated deployment/preview-runtime directory.
 
 ```powershell
 git clone https://github.com/MrToKa/routings-model-preparer.git
@@ -38,7 +38,7 @@ For subsequent starts, use the same runtime arguments without -Build. To update 
 
 Stop with .\stop-preparer.ps1 from preparer-source. Do not delete Docker volumes to update: they contain persistent application data.
 
-See [deployment documentation](preparer-source/deployment/README.md) and [application documentation](preparer-source/docs/app.md) for detailed configuration and live-mode requirements. In this standalone repository, startup defaults use local .env, imports, sources and deployment/preview-runtime/7.130.0 paths; explicit arguments override them. Older stage documentation describes the original deployment and its historical validation.
+See [deployment documentation](preparer-source/deployment/README.md) and [application documentation](preparer-source/docs/app.md) for detailed configuration and live-mode requirements. In this standalone repository, startup defaults use local .env, imports, sources and vendor/viewer/7.130.0 paths; explicit arguments override them. Older stage documentation describes the original deployment and its historical validation.
 
 ## WFC integration and scope
 

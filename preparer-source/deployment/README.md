@@ -37,6 +37,8 @@ download, SDK vending or APS request in the Dockerfile. Build RUN steps use
 `--network=none`. Normal startup uses an already delivered image, `--no-build`
 and `--pull never`.
 
+The default SDK source is `vendor/viewer/7.130.0` under preparer-source, separate from the generated `deployment/preview-runtime` target. Supply the original SDK source bundle with its pinned `vendor-manifest.json` and 206 declared assets; an arbitrary SDK download cannot pass this check. Never nest the source in the target or the target in the source.
+
 Three named build contexts contain only allowlisted copied Preparer source,
 the public Package A source, and the verified deployment SDK. The main context
 is the tiny deployment directory with a deny-all `.dockerignore` allowing its
@@ -47,7 +49,7 @@ its source SHA inventory under `deployment/.build/<UUID>/build-input-inventory.j
 
 ## Existing configuration file
 
-The start script defaults to local `.env`, `imports`, `sources` and `deployment/preview-runtime/7.130.0` paths under preparer-source. Supply existing paths explicitly as shown in the [repository README](../../README.md). Keep the configuration outside Git.
+The start script defaults to local `.env`, `imports`, `sources` and `vendor/viewer/7.130.0` paths under preparer-source. Supply existing paths explicitly as shown in the [repository README](../../README.md). Keep the configuration outside Git.
 
 The script validates required setting presence/syntax without printing values.
 Compose supplies the existing file through runtime `env_file` with `format:raw`,
