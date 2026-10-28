@@ -42,6 +42,6 @@ See [deployment documentation](preparer-source/deployment/README.md) and [applic
 
 ## WFC integration and scope
 
-This is a separate application and Compose project (routings-preparer). Updating WFC does not update it. The source snapshot includes the optional workspace implementation; enabling its compose-workspace.yaml overlay also requires matching WFC server integration. The WFC integration patch and WFC code are not included in this repository, and compatibility with a current WFC deployment has not been verified here.
+This is a separate application and Compose project (routings-preparer). Updating WFC does not update it. The source includes the optional authenticated WFC workspace. Use -WfcOrigin with the startup script to enable its Compose overlay and automatic verified package imports. WFC main at 96e63f1 already has the required import endpoints; the historical retained-ZIP integration patch is not needed for this upload flow. See [WFC workspace deployment](preparer-source/deployment/WFC-WORKSPACE.md) for SDK reuse from WFC, deployment steps and the remaining desktop validation.
 
 Real models, SDK binaries, account evidence, runtime state, credentials and the original account-specific tools/record-cost-review.mjs utility are excluded. This repository does not grant rights to redistribute Autodesk software or model data. No software license has been selected for this initial import.

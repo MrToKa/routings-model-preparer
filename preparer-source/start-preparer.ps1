@@ -11,6 +11,7 @@ param(
     [switch]$AllowNewCloudPreparation,
     [string]$Image = 'routings-model-preparer:stage3',
     [string]$PackageRoot,
+    [string]$WfcOrigin,
     [string]$SdkSource,
     [string]$NodeBase = 'node@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5',
     [switch]$Build,
@@ -24,6 +25,21 @@ if ([string]::IsNullOrWhiteSpace($EnvFilePath)) { $EnvFilePath = Join-Path $PSSc
 if ([string]::IsNullOrWhiteSpace($ImportRoot)) { $ImportRoot = Join-Path $PSScriptRoot 'imports' }
 if ([string]::IsNullOrWhiteSpace($SourceDirectory)) { $SourceDirectory = Join-Path $PSScriptRoot 'sources' }
 if ([string]::IsNullOrWhiteSpace($SdkSource)) { $SdkSource = Join-Path $PSScriptRoot 'vendor\viewer\7.130.0' }
+$taskWfcOrigin = $null
+if (-not [string]::IsNullOrWhiteSpace($WfcOrigin)) {
+    $taskWfcUri = $null
+    if (-not [Uri]::TryCreate($WfcOrigin, [UriKind]::Absolute, [ref]$taskWfcUri) -or
+        $taskWfcUri.Scheme -notin @('http','https') -or $taskWfcUri.UserInfo -or
+        $taskWfcUri.AbsolutePath -ne '/' -or $taskWfcUri.Query -or $taskWfcUri.Fragment) {
+        throw 'WfcOrigin must be a fixed HTTP(S) origin without credentials, path, query or fragment.'
+    }
+    if (($PSBoundParameters.ContainsKey('Mode') -and $Mode -ne 'live') -or
+        $PriceProofPath -or $PriceProofSha256 -or $AllowNewCloudPreparation) {
+        throw 'WFC workspace requires live mode without legacy price-proof or cloud-preparation switches.'
+    }
+    $Mode = 'live'
+    $taskWfcOrigin = $taskWfcUri.GetLeftPart([UriPartial]::Authority)
+}
 if ([string]::IsNullOrWhiteSpace($PackageRoot)) { $PackageRoot = Join-Path (Split-Path $PSScriptRoot -Parent) 'routings-model-package' }
 $taskProject = 'routings-preparer'
 $taskCompose = Join-Path $PSScriptRoot 'deployment\compose.yaml'
@@ -127,10 +143,13 @@ if ($PriceProofPath -or $PriceProofSha256) {
     if ((Get-FileHash -LiteralPath $taskProofPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $PriceProofSha256) { throw 'Pinned price proof SHA-256 differs.' }
 }
 $taskConfigurationSha = (Get-FileHash -LiteralPath $taskEnvPath -Algorithm SHA256).Hash.ToLowerInvariant()
-$taskLiveReuseOnly = if ($AllowNewCloudPreparation) { 'false' } else { 'true' }
+$taskLiveReuseOnly = if ($taskWfcOrigin -or $AllowNewCloudPreparation) { 'false' } else { 'true' }
 $taskRuntimeConfigurationSha = Path-Identity ("configuration-sha256=$taskConfigurationSha;live-reuse-only=$taskLiveReuseOnly")
 if ($ListenAddress -ne '127.0.0.1') {
     $taskRuntimeConfigurationSha = Path-Identity ("configuration-sha256=$taskConfigurationSha;live-reuse-only=$taskLiveReuseOnly;origin=$taskPublicOrigin")
+}
+if ($taskWfcOrigin) {
+    $taskRuntimeConfigurationSha = Path-Identity ("configuration-sha256=$taskConfigurationSha;live-reuse-only=$taskLiveReuseOnly;origin=$taskPublicOrigin;wfc-origin=$taskWfcOrigin")
 }
 $taskImportIdentity = Path-Identity $taskImportPath
 $taskSourceIdentity = Path-Identity $taskSourcePath
@@ -223,10 +242,12 @@ if ($taskProofPath) {
     $taskRuntimeVariables['PREPARER_PRICE_PROOF_BASENAME'] = Split-Path $taskProofPath -Leaf
     $taskRuntimeVariables['PREPARER_PRICE_PROOF_SHA256'] = $PriceProofSha256
 }
+if ($taskWfcOrigin) { $taskRuntimeVariables['PREPARER_WFC_ORIGIN'] = $taskWfcOrigin }
 $taskPreviousVariables = @{}
 try {
     foreach ($taskName in $taskRuntimeVariables.Keys) { $taskPreviousVariables[$taskName] = [Environment]::GetEnvironmentVariable($taskName,'Process'); [Environment]::SetEnvironmentVariable($taskName,$taskRuntimeVariables[$taskName],'Process') }
     $taskUp = @('compose','--project-name',$taskProject,'--file',$taskCompose)
+    if ($taskWfcOrigin) { $taskUp += @('--file',(Join-Path $PSScriptRoot 'deployment\compose-workspace.yaml')) }
     if ($taskProofPath) { $taskUp += @('--file',(Join-Path $PSScriptRoot 'deployment\compose-live.yaml')) }
     $taskUp += @('up','--detach','--no-build','--pull','never','--wait','--wait-timeout','90')
     if ($Recreate) { $taskUp += '--force-recreate' } else { $taskUp += '--no-recreate' }
@@ -234,7 +255,8 @@ try {
     $taskHealth = Invoke-RestMethod -Uri "$taskPublicOrigin/health" -TimeoutSec 10
     $taskObservedMode = if ($taskHealth.PSObject.Properties['requestedMode']) { $taskHealth.requestedMode } else { $taskHealth.mode }
     if ($taskHealth.status -ne 'ok' -or $taskObservedMode -ne $Mode) { throw 'Started application identity or requested mode differs.' }
-    $taskPreparationPolicy = if ($AllowNewCloudPreparation) { 'new preparation explicitly enabled; every operation requires current source-bound zero-cost proof' } else { 'existing-artifact reuse only' }
+    if ($taskWfcOrigin -and (-not $taskHealth.PSObject.Properties['authentication'] -or $taskHealth.authentication -ne 'wfc')) { throw 'The running image does not expose the requested WFC workspace. Build the current source before enabling WfcOrigin.' }
+    $taskPreparationPolicy = if ($taskWfcOrigin) { 'WFC workspace; authenticated project import; Autodesk settings and checks required in UI' } elseif ($AllowNewCloudPreparation) { 'new preparation explicitly enabled; every operation requires current source-bound zero-cost proof' } else { 'existing-artifact reuse only' }
     Write-Output "Preparer: $taskPublicOrigin/ (requested mode: $Mode; live policy: $taskPreparationPolicy)"
 } finally {
     foreach ($taskName in $taskPreviousVariables.Keys) { [Environment]::SetEnvironmentVariable($taskName,$taskPreviousVariables[$taskName],'Process') }
