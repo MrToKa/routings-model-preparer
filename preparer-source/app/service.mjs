@@ -13,7 +13,7 @@ import { uuid, canonical, digest, inside, safePath, hashFile, removeOwned, creat
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const MAX_UPLOAD = 2147483648, MAX_JSON = 16384;
 const ACTIONS = ['approve-cost', 'prepare', 'reconcile', 'wait', 'download', 'package', 'verify', 'preview'];
-const MIME = { '.html': 'text/html; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf' };
 function exact(value, keys) { if (!value || Object.getPrototypeOf(value) !== Object.prototype || Object.keys(value).some(k => !keys.includes(k))) bad('INVALID_REQUEST'); return value; }
 function label(value) { if (typeof value !== 'string' || value.length < 1 || value.length > 200 || /[\x00-\x1f]|https?:\/\/|(?:bearer|access_token|client_secret)/i.test(value)) bad('INVALID_REQUEST'); return value; }
 function filename(value, kind) {
@@ -581,7 +581,7 @@ export async function createPreparerService(options = {}) {
       const target = path.join(capability.previewDirectory, ...resource.path.split('/'));
       if (!currentPreview(capability)) bad('ARTIFACT_INVALID', 409);
       if (!inside(previews, capability.previewDirectory) || !inside(capability.previewDirectory, target)) bad('UNSAFE_PATH');
-      await streamFile(req, res, target, 'application/octet-stream', null, resource); return;
+      await streamFile(req, res, target, MIME[path.extname(target).toLowerCase()] || 'application/octet-stream', null, resource); return;
     }
     if (!mutation && (route === '/' || /^\/preview\/[0-9a-f-]{36}$/.test(route) || route.startsWith('/web/') || route.startsWith('/sdk/'))) {
       let target;

@@ -9,6 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import * as publicPackage from '../../routings-model-package/index.mjs';
 import { createPackageAdapter } from '../lib/package-adapter.mjs';
 import { CoreError, contextFromSpec, clone } from '../lib/contracts.mjs';
+import { writeZip, openZip } from '../../routings-model-package/lib/zip.mjs';
 import { tinyModel } from './fixtures/model-fixture.mjs';
 
 const packageModulePath = fileURLToPath(new URL('../../routings-model-package/index.mjs', import.meta.url));
@@ -393,4 +394,47 @@ test('unknown application/runtime files are rejected before any download', async
   const f = await setup(t); f.plan.resources[0].path = 'output/0/runtime.js';
   await rejects(() => f.adapter.download(f.job, { provider: f.provider, onCheckpoint: f.onCheckpoint }), 'UNSUPPORTED_PROFILE');
   assert.equal(f.calls.resources.length, 0);
+});
+
+test('manifest-declared PNG downloads through the adapter with identical bytes and hashes', async t => {
+  const f = await setup(t);
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==', 'base64');
+  const zip = await openZip(f.model.data.get('output/0/0.svf'));
+  let manifest, metadata;
+  try { manifest = JSON.parse((await zip.read('manifest.json')).toString('utf8')); metadata = await zip.read('metadata.json'); }
+  finally { await zip.close(); }
+  manifest.toolkitversion = 'LMVTK 5.0.43.0';
+  manifest.assets.unshift({ id:'texture', type:'Autodesk.CloudPlatform.Image', URI:'texture.png', size:png.length, usize:png.length });
+  const rewritten = path.join(f.root, 'fixture-with-image.svf');
+  await writeZip(rewritten,[{name:'manifest.json',data:Buffer.from(JSON.stringify(manifest))},{name:'metadata.json',data:metadata}]);
+  const svf = await fs.readFile(rewritten);
+  f.model.data.set('output/0/0.svf',svf);
+  f.model.data.set('output/0/texture.png',png);
+  const svfRow = f.model.resources.find(row=>row.path==='output/0/0.svf');
+  svfRow.bytes = svf.length; svfRow.sha256 = hash(svf);
+  f.model.resources.push({path:'output/0/texture.png',resourceId:'fixture-image',bytes:png.length,sha256:hash(png)});
+  f.plan.resources = clone(f.model.resources);
+  const result = await f.adapter.download(f.job,{provider:f.provider,onCheckpoint:f.onCheckpoint});
+  assert.equal(result.download.status,'downloaded');
+  assert.deepEqual(await fs.readFile(path.join(result.modelDirectory,'output/0/texture.png')),png);
+  const integrity = JSON.parse(await fs.readFile(path.join(result.modelDirectory,'integrity.json'),'utf8'));
+  assert.equal(integrity['output/0/texture.png'].sha256,hash(png));
+  assert.equal(integrity['output/0/texture.png'].bytes,png.length);
+});
+
+test('image support does not permit SVG download-plan resources',async t=>{
+  const f=await setup(t);
+  f.plan.resources.push({path:'output/0/image.svg',resourceId:'fixture-svg',bytes:5});
+  await rejects(()=>f.adapter.download(f.job,{provider:f.provider,onCheckpoint:f.onCheckpoint}),'UNSUPPORTED_PROFILE');
+  assert.equal(f.calls.resources.length,0);
+});
+
+test('PNG download plan reaches the durable checkpoint before any provider read',async t=>{
+  const f=await setup(t);
+  f.plan.resources.push({path:'output/0/image.png',resourceId:'fixture-image-plan',bytes:16});
+  let checkpoint;
+  await rejects(()=>f.adapter.download(f.job,{provider:f.provider,onCheckpoint:async value=>{checkpoint=value;throw new CoreError('STORE_WRITE_FAILED');}}),'STORE_WRITE_FAILED');
+  assert.equal(checkpoint.status,'downloading');
+  assert.equal(f.calls.plans,1);
+  assert.equal(f.calls.resources.length,0);
 });
