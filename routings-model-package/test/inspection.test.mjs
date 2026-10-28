@@ -79,3 +79,30 @@ for (const [name, mutate, code] of [
     await rejects(inspectSvfEnvelope(await envelope(t, { mutate: value => { value.toolkitversion = 'LMVTK 5.0.43.0'; mutate(value); } })), code);
   });
 }
+
+for (const [name, mutate, fields] of [
+  ['unknown Autodesk asset type', value => { value.assets[0].type = 'Autodesk.CloudPlatform.UnknownFixture'; }, ['type']],
+  ['negative uncompressed size', value => { value.assets[0].usize = -1; }, ['usize']],
+  ['numeric asset ID', value => { value.assets[0].id = 17; }, ['id']],
+  ['invalid URI type', value => { value.assets[0].URI = null; }, ['URI']],
+]) {
+  test('asset rejection identifies ' + name + ' without logging private values', async t => {
+    const bytes = await envelope(t, { mutate: value => {
+      value.toolkitversion = 'LMVTK 5.0.43.0';
+      value.assets[0].id = 'PRIVATE_MODEL_IDENTIFIER';
+      value.assets[0].URI = 'PRIVATE_RESOURCE.pf';
+      mutate(value);
+    } });
+    const messages = [], previous = process.stderr.write;
+    process.stderr.write = function (chunk) { messages.push(String(chunk)); return true; };
+    try { await rejects(inspectSvfEnvelope(bytes), 'UNSUPPORTED_PROFILE'); }
+    finally { process.stderr.write = previous; }
+    const diagnostic = messages.map(line => JSON.parse(line)).find(row => row.reason === 'Invalid or unsupported SVF asset.');
+    assert.ok(diagnostic);
+    assert.equal(diagnostic.assetIndex, 0);
+    assert.deepEqual(diagnostic.invalidAssetFields, fields);
+    if (fields.includes('type')) assert.equal(diagnostic.assetType, 'Autodesk.CloudPlatform.UnknownFixture');
+    if (fields.includes('usize')) assert.equal(diagnostic.usize, -1);
+    assert.ok(!messages.join('').includes('PRIVATE_'));
+  });
+}
