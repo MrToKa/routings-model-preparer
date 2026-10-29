@@ -372,7 +372,11 @@ test('plan construction signs only the root and mandatory DB, regardless of sibl
 });
 
 test('adapter resume validates cached bytes before signing only the missing sibling', async t => {
-  const f = await fixture(t), job = { jobId: randomUUID(), frozen: f.context };
+  const f = await fixture(t), capture = path.join(f.root, 'capture');
+  await fs.mkdir(capture);
+  const snapshotPath = path.join(capture, f.context.source.name);
+  await fs.copyFile(f.context.source.snapshotPath, snapshotPath);
+  const job = { jobId: randomUUID(), frozen: { ...f.context, source: { ...f.context.source, snapshotPath } } };
   const adapter = await createPackageAdapter({ packageApi, workDirectory: path.join(f.root, 'adapter-work') });
   let saved;
   const checkpoint = async state => { saved = structuredClone(state); };
