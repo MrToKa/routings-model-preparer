@@ -25,7 +25,7 @@ function resourcePath(value) {
   const segments = basename.split('/');
   if (segments.length > 16 || segments.some(part => !part || part === '.' || part === '..' || part.length > 255 || /[. ]$/.test(part) || /^\.env(?:\.|$)/i.test(part) || RESERVED.test(part))) fail('UNSAFE_PATH');
   if ((basename.includes('/') || basename.includes(' ')) && !/[.](?:png|jpe?g)$/i.test(basename)) fail('UNSAFE_PATH');
-  if (!['0.svf', 'properties.db', 'Materials.json.gz', 'objects_attrs.json.gz', 'objects_avs.json.gz', 'objects_ids.json.gz', 'objects_offs.json.gz', 'objects_vals.json.gz', 'objects_viewables.json.gz'].includes(basename) && !/[.](?:png|jpe?g)$/i.test(basename) && !/\.(pf|bin|pack)$/.test(basename)) {
+  if (!['0.svf', 'properties.db', 'Materials.json.gz', 'ProteinMaterials.json.gz', 'objects_attrs.json.gz', 'objects_avs.json.gz', 'objects_ids.json.gz', 'objects_offs.json.gz', 'objects_vals.json.gz', 'objects_viewables.json.gz'].includes(basename) && !/[.](?:png|jpe?g)$/i.test(basename) && !/\.(pf|bin|pack)$/.test(basename)) {
     try { process.stderr.write(JSON.stringify({ event: 'svf-profile-rejected', reason: 'Download plan contains an unsupported resource suffix.' }) + '\n'); } catch {}
     fail('UNSUPPORTED_PROFILE');
   }
