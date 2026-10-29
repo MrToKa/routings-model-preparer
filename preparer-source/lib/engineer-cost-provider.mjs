@@ -4,7 +4,7 @@ import path from 'node:path';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { brandAPSCostProvider } from './aps-capabilities.mjs';
 import { costIdentity } from './cost.mjs';
-import { abortCheck, canonical, clone, digest, fail, plain, PROFILE, validateLocalPath, validateSourceName } from './contracts.mjs';
+import { abortCheck, canonical, clone, CoreError, digest, fail, plain, PROFILE, validateLocalPath, validateSourceName } from './contracts.mjs';
 
 const SHA = /^[0-9a-f]{64}$/;
 const KIND = 'engineer-declared-free';
@@ -105,14 +105,20 @@ export async function createEngineerCostProvider({ store, signingKeyPath, getAut
     evidence.attestation = sign(evidence);
     return evidence;
   }
+  function assertCurrentEvidence(evidence, context) {
+    const auth = authorization(), checked = instant(evidence?.checkedAt), expires = instant(evidence?.expiresAt), at = now();
+    if (![checked, expires].every(Number.isSafeInteger) || checked > at || expires <= checked || expires - checked > HOUR ||
+      typeof evidence.attestation !== 'string' || !SHA.test(evidence.attestation)) fail('COST_UNVERIFIABLE');
+    const expected = evidenceFor(auth, context, evidence.checkedAt, evidence.expiresAt);
+    // Only an authentic, still-bound lease may be classified as expired.
+    // A revoked declaration, changed configuration or replaced key must stop.
+    if (!timingSafeEqual(Buffer.from(evidence.attestation, 'hex'), Buffer.from(sign(evidence), 'hex')) ||
+      canonical(evidence) !== canonical(expected)) fail('COST_UNVERIFIABLE');
+    if (expires <= at) fail('COST_EXPIRED');
+  }
   function verifyEvidence(evidence, context) {
-    try {
-      const auth = authorization(), checked = instant(evidence?.checkedAt), expires = instant(evidence?.expiresAt), at = now();
-      if (![checked, expires].every(Number.isSafeInteger) || checked > at || expires <= at || expires <= checked || expires - checked > HOUR ||
-        typeof evidence.attestation !== 'string' || !SHA.test(evidence.attestation)) return false;
-      const expected = evidenceFor(auth, context, evidence.checkedAt, evidence.expiresAt);
-      return timingSafeEqual(Buffer.from(evidence.attestation, 'hex'), Buffer.from(sign(evidence), 'hex')) && canonical(evidence) === canonical(expected);
-    } catch { return false; }
+    try { assertCurrentEvidence(evidence, context); return true; }
+    catch { return false; }
   }
   async function currentEvidence(context, { signal, recoverDead = false } = {}) {
     abortCheck(signal);
@@ -136,7 +142,7 @@ export async function createEngineerCostProvider({ store, signingKeyPath, getAut
         evidence = evidenceFor(auth, context, new Date(at).toISOString(), new Date(at + leaseMs).toISOString());
         await store.write('cost', key, { schemaVersion: 1, kind: 'engineer-declared-lease', reference, identity, evidence }, { lease, signal });
       }
-      if (!verifyEvidence(evidence, context)) fail('COST_UNVERIFIABLE');
+      assertCurrentEvidence(evidence, context);
       abortCheck(signal);
       return clone(evidence);
     }, { signal, recoverDead });
@@ -148,7 +154,7 @@ export async function createEngineerCostProvider({ store, signingKeyPath, getAut
     const evidence = await currentEvidence(context, { signal, recoverDead });
     const key = digest({ kind: 'engineer-declared-local-budget', submissionIdentity: context.submissionIdentity });
     await store.withLock('cost', key, async lease => {
-      if (!verifyEvidence(evidence, context)) fail('COST_UNVERIFIABLE');
+      assertCurrentEvidence(evidence, context);
       const current = await store.read('cost', key);
       if (current) {
         exact(current, ['schemaVersion', 'kind', 'submissionIdentity', 'counts', 'reads'], 'STORE_CORRUPT');
@@ -167,7 +173,7 @@ export async function createEngineerCostProvider({ store, signingKeyPath, getAut
       await store.write('cost', key, budget, { lease, signal });
       // Revocation or expiry during a slow commit conservatively keeps the
       // reservation and prevents the subsequent provider request.
-      if (!verifyEvidence(evidence, context)) fail('COST_UNVERIFIABLE');
+      assertCurrentEvidence(evidence, context);
       abortCheck(signal);
     }, { signal, recoverDead });
   }
@@ -187,7 +193,18 @@ export async function createEngineerCostProvider({ store, signingKeyPath, getAut
       if (!OPERATIONS.includes(operation)) fail('COST_UNVERIFIABLE');
       return reserve(context, operation, options);
     },
-    async reserveRead(context, options = {}) { return reserve(context, 'read', options); },
+    async reserveRead(context, options = {}) {
+      // A reservation can outlive the lease while waiting for its lock or
+      // committing the budget. Renew outside that lock, once, for reads only.
+      // Existing reservation counts remain durable, including a failed attempt.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try { return await reserve(context, 'read', options); }
+        catch (error) {
+          abortCheck(options.signal);
+          if (attempt !== 0 || !(error instanceof CoreError) || error.code !== 'COST_EXPIRED') throw error;
+        }
+      }
+    },
   };
   brandAPSCostProvider(api);
   return Object.freeze(api);

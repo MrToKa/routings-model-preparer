@@ -9,7 +9,7 @@ import { createModelPreparer } from '../lib/core.mjs';
 import { createEngineerCostProvider } from '../lib/engineer-cost-provider.mjs';
 import { evaluateCostEvidence, createFakeCostProvider, issueFakeCostEvidence } from '../lib/cost.mjs';
 import { brandAPSProvider, isAPSCostProvider } from '../lib/aps-capabilities.mjs';
-import { contextFromSpec, PROFILE } from '../lib/contracts.mjs';
+import { contextFromSpec, PROFILE, digest } from '../lib/contracts.mjs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const code = expected => error => error?.code === expected;
@@ -180,4 +180,100 @@ test('revocation during provider await blocks final mutation and retains unknown
   await assert.rejects(() => core.prepare(job.jobId), code('COST_BLOCKED'));
   assert.equal(aps.counts.submit, 0);
   assert.equal((await core.readJob(job.jobId)).submission.phase, 'submission-unknown');
+});
+
+
+async function reservationFixture(t, { beforeBudgetLock, afterBudgetCommit, ...options } = {}) {
+  const f = await fixture(t, { leaseMs: 1000, ...options });
+  const key = digest({ kind: 'engineer-declared-local-budget', submissionIdentity: f.context.submissionIdentity });
+  const wrapped = {
+    read: (...args) => f.store.read(...args),
+    withLock: async (kind, recordKey, action, settings) => {
+      if (kind === 'cost' && recordKey === key) await beforeBudgetLock?.(f);
+      return f.store.withLock(kind, recordKey, action, settings);
+    },
+    write: async (kind, recordKey, value, settings) => {
+      const result = await f.store.write(kind, recordKey, value, settings);
+      if (kind === 'cost' && recordKey === key) await afterBudgetCommit?.(f, value);
+      return result;
+    },
+  };
+  f.provider = await createEngineerCostProvider({ ...f.configuration, store: wrapped });
+  f.budget = () => f.store.read('cost', key);
+  return f;
+}
+
+test('read lease expiry while waiting for the reservation lock renews without losing the read budget', async t => {
+  let locks = 0;
+  const f = await reservationFixture(t, { beforeBudgetLock: f => { if (++locks === 1) f.clock.advance(1000); } });
+  const first = await f.provider.getEvidence(f.context);
+  await f.provider.reserveRead(f.context);
+  const current = await f.provider.getEvidence(f.context);
+  assert.equal(current.evidenceId, first.evidenceId);
+  assert.notEqual(current.checkedAt, first.checkedAt);
+  assert.equal(f.provider.verifyEvidence(current, f.context), true);
+  assert.equal((await f.budget()).reads, 1);
+  assert.equal(locks, 2);
+});
+
+test('read lease expiry after its durable reservation renews before one provider read and retains every reservation', async t => {
+  let writes = 0, delivered = 0;
+  const f = await reservationFixture(t, { maxReadCalls: 2, afterBudgetCommit: f => { if (++writes === 1) f.clock.advance(1000); } });
+  await f.provider.reserveRead(f.context); delivered++;
+  assert.equal(delivered, 1);
+  assert.equal(writes, 2);
+  assert.equal((await f.budget()).reads, 2);
+  assert.deepEqual((await f.budget()).counts, { storage: 0, upload: 0, submit: 0 });
+  await assert.rejects(() => f.provider.reserveRead(f.context), code('READ_LIMIT'));
+  assert.equal((await f.budget()).reads, 2);
+});
+
+test('repeated read lease expiry remains bounded to one renewal', async t => {
+  let writes = 0;
+  const f = await reservationFixture(t, { afterBudgetCommit: f => { writes++; f.clock.advance(1000); } });
+  await assert.rejects(() => f.provider.reserveRead(f.context), code('COST_EXPIRED'));
+  assert.equal(writes, 2);
+  assert.equal((await f.budget()).reads, 2);
+});
+
+test('a cloud mutation expiring after reservation is not retried or renewed', async t => {
+  let writes = 0;
+  const f = await reservationFixture(t, { afterBudgetCommit: f => { writes++; f.clock.advance(1000); } });
+  await assert.rejects(() => f.provider.reserveMutation(f.context, 'submit'), code('COST_EXPIRED'));
+  assert.equal(writes, 1);
+  assert.equal((await f.budget()).counts.submit, 1);
+});
+
+test('revocation during a read reservation stops immediately without refreshing authority', async t => {
+  let writes = 0;
+  const f = await reservationFixture(t, { afterBudgetCommit: f => { writes++; f.auth = { ...f.auth, enabled: false }; } });
+  await assert.rejects(() => f.provider.reserveRead(f.context), code('COST_UNKNOWN'));
+  assert.equal(writes, 1);
+  assert.equal((await f.budget()).reads, 1);
+});
+
+test('changed settings during a read reservation are not treated as lease expiry', async t => {
+  let writes = 0;
+  const f = await reservationFixture(t, { afterBudgetCommit: f => { writes++; f.auth = { ...f.auth, configurationId: 'e'.repeat(64) }; } });
+  await assert.rejects(() => f.provider.reserveRead(f.context), code('COST_UNVERIFIABLE'));
+  assert.equal(writes, 1);
+  assert.equal((await f.budget()).reads, 1);
+});
+
+test('an expired read with a replaced signing key cannot authorize renewal', async t => {
+  let writes = 0;
+  const f = await reservationFixture(t, { afterBudgetCommit: async f => {
+    writes++; await fs.writeFile(f.configuration.signingKeyPath, Buffer.alloc(32)); f.clock.advance(1000);
+  } });
+  await assert.rejects(() => f.provider.reserveRead(f.context), code('COST_UNVERIFIABLE'));
+  assert.equal(writes, 1);
+  assert.equal((await f.budget()).reads, 1);
+});
+
+test('cancellation at an expiry boundary prevents a second reservation', async t => {
+  const cancellation = new AbortController(); let writes = 0;
+  const f = await reservationFixture(t, { afterBudgetCommit: f => { writes++; f.clock.advance(1000); cancellation.abort(); } });
+  await assert.rejects(() => f.provider.reserveRead(f.context, { signal: cancellation.signal }), code('LOCAL_ABORTED'));
+  assert.equal(writes, 1);
+  assert.equal((await f.budget()).reads, 1);
 });
