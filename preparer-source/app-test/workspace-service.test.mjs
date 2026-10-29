@@ -25,7 +25,7 @@ async function setup(t, options = {}) {
   const provider = createFakeProvider({ resources: simulationResources(), ...(options.multiRoot ? { handlers: {
     getManifest: async (context, _opts, fixture) => { const value = await fixture.default(); return value.status === 'success' ? { ...value, roots: ['root-one', 'root-two'].map(rootId => ({ rootId, format: 'svf', supportProfile: context.supportProfile })) } : value; },
     getDownloadPlan: async (context, opts, fixture) => ({ schemaVersion: 1, submissionIdentity: context.submissionIdentity, objectId: context.objectId, urn: context.urn, region: context.region, rootId: opts.rootId, supportProfile: context.supportProfile, resources: fixture.provider.transport.describeResources() }),
-  } } : {}) });
+  } } : {}), ...(options.readResource ? { handlers: { readResource: options.readResource } } : {}) });
   const wfcFetch = async (url, init = {}) => {
     control.wfcCalls.push({ url, method: init.method || 'GET' }); assert.equal(new URL(url).origin, 'https://wfc.example.test'); assert.equal(init.redirect, 'manual');
     const route = new URL(url).pathname;
@@ -112,4 +112,30 @@ test('multiple compatible 3D views pause once and resume the chosen root without
   assert.equal((await s.call(`/api/generations/${generation.id}/resume`, { method: 'POST', input: { rootId: 'unknown-root' } })).status, 400);
   assert.equal((await s.call(`/api/generations/${generation.id}/resume`, { method: 'POST', input: { rootId: 'root-two' } })).status, 202);
   const completed = await s.wait(generation.id); assert.equal(completed.status, 'complete', JSON.stringify(completed)); assert.equal(s.provider.counts.submit, 1); assert.equal(s.provider.calls.find(row => row.operation === 'getDownloadPlan').rootId, 'root-two');
+});
+
+test('authorized workspace polls live bytes through the cheap progress endpoint and retains project access checks', async t => {
+  let release, entered; const gate = new Promise(r => { release = r; }), first = new Promise(r => { entered = r; });
+  t.after(() => release());
+  let held = false;
+  const s = await setup(t, { readResource: async function* (_context, _options, fixture) {
+    for await (const raw of fixture.default()) {
+      if (!held) { held = true; yield raw.subarray(0, 1); entered(); await gate; yield raw.subarray(1); }
+      else yield raw;
+    }
+  } });
+  await s.ready(); const { generation } = await s.start(); await first;
+  let row;
+  for (let i = 0; i < 30; i++) {
+    row = (await s.call('/api/generations')).value.generations.find(r => r.id === generation.id);
+    if (row.downloadProgress?.currentBytes >= 1) break;
+    await pause(50);
+  }
+  assert.equal(row.downloadProgress.status, 'running'); assert.equal(row.downloadProgress.currentBytes, 1);
+  assert.equal(row.downloadProgress.plannedResources, 3); assert.ok(row.downloadProgress.lastByteAt);
+  assert.doesNotMatch(JSON.stringify(row.downloadProgress), /PRIVATE|urn:adsk|snapshotPath|resourceId|https:|modelDirectory/);
+  assert.equal((await s.call('/api/generations', { authenticated: false })).status, 401);
+  s.control.projectEdit = false; assert.deepEqual((await s.call('/api/generations')).value.generations, []);
+  s.control.projectEdit = true; release();
+  assert.equal((await s.wait(generation.id)).status, 'complete');
 });

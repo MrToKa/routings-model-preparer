@@ -211,7 +211,8 @@ export async function createPreparerService(options = {}) {
         cost: { allowed: job.costDecision?.allowed === true, code: /^[A-Z][A-Z0-9_]*$/.test(job.costDecision?.code || '') ? job.costDecision.code : null, ...(job.costEvidence?.checkedAt ? { checkedAt: job.costEvidence.checkedAt } : {}), ...(job.costEvidence?.expiresAt ? { expiresAt: job.costEvidence.expiresAt } : {}) },
         upload: job.upload ? { status: job.upload.status } : null,
         submission: job.submission ? { phase: job.submission.phase, attempts: job.submission.attempts.length, reads: job.submission.observations.length } : null,
-        download: job.download ? { status: job.download.status, completedResources: Object.keys(job.download.checkpoints || {}).length } : null,
+        download: job.download ? { status: job.download.status, completedResources: Object.keys(job.download.checkpoints || {}).length,
+          completedBytes: Object.values(job.download.checkpoints || {}).reduce((sum, row) => sum + row.bytes, 0) } : null,
         package: pkg ? { packageId: pkg.packageId, bytes: pkg.bytes, sha256: pkg.sha256, contentFingerprint: pkg.contentFingerprint, resourceCount: pkg.resourceCount, sourceIdentityBasis: pkg.sourceIdentityBasis || pkg.source?.identityBasis || artifacts.get(job.jobId)?.sourceIdentityBasis || null, sdkVersion: '7.130.0' } : null,
       }, allowedActions: allowed(job), operationId: active?.jobId === job.jobId ? active.operationId : null };
   }
@@ -531,6 +532,11 @@ export async function createPreparerService(options = {}) {
         jobs.set(jobId, job); return { jobId };
       });
       send(res, 202, { operation: await operationView(op) }); return;
+    }
+    match = /^\/api\/jobs\/([0-9a-f-]+)\/download-progress$/.exec(route);
+    if (match && !mutation) {
+      const jobId = uuid(match[1]); if (!jobs.has(jobId)) bad('NOT_FOUND', 404);
+      send(res, 200, { progress: core.readDownloadProgress?.(jobId) ?? null }); return;
     }
     match = /^\/api\/jobs\/([0-9a-f-]+)\/actions$/.exec(route);
     if (match && mutation) {

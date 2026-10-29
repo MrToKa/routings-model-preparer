@@ -40,15 +40,49 @@ function renderInputs() {
   if (state.sources.some(source => source.inputId === currentSource)) $('known-source').value = currentSource; $('source-field').hidden = !state.sources.length; renderAvailability();
 }
 function progress(generation) { if (generation.status === 'complete') return 100; const phase = generation.stage || generation.job?.status || ''; if (/import|wfc/.test(phase)) return 92; if (/package|verify|packag/.test(phase)) return 80; if (/download/.test(phase)) return 64; if (/wait|translat|submit|convert/.test(phase)) return 43; if (/prepar|upload/.test(phase)) return 25; return 9; }
+
+function downloadView(data, at = Date.now()) {
+  if (!data || !Number.isSafeInteger(data.completedResources) || !Number.isSafeInteger(data.completedBytes)) return null;
+  const mib = value => (value / 1048576).toLocaleString('bg-BG', { maximumFractionDigits: 1 }) + ' MiB';
+  const total = Number.isSafeInteger(data.plannedResources) && data.plannedResources > 0 ? data.plannedResources : null;
+  const totalBytes = Number.isSafeInteger(data.plannedBytes) && data.plannedBytes > 0 ? data.plannedBytes : null;
+  const current = Number.isSafeInteger(data.currentBytes) && data.currentBytes >= 0 ? data.currentBytes : 0;
+  const fraction = totalBytes ? Math.min(1, Math.max(0, (data.completedBytes + current) / totalBytes)) : null;
+  const summary = 'Запазени ' + data.completedResources + (total ? ' от ' + total : '') + ' файла · ' + mib(data.completedBytes)
+    + (totalBytes ? ' от ' + mib(totalBytes) : '') + (current ? ' · Текущ файл: ' + mib(current) : '');
+  const phases = { manifest: 'Проверка на списъка в Autodesk…', 'download-plan': 'Подготовка на списъка за сваляне…',
+    'checkpoint-verification': 'Проверка на запазените файлове…', 'checkpoint-commit': 'Запис на завършения файл…',
+    inventory: 'Проверка на свалените файлове…', 'profile-validation': 'Проверка на SVF съдържанието…' };
+  const age = Number.isFinite(Date.parse(data.lastByteAt)) ? Math.max(0, Math.floor((at - Date.parse(data.lastByteAt)) / 1000)) : null;
+  const active = data.status === 'running';
+  const activity = !active ? (['failed', 'interrupted', 'complete'].includes(data.status) ? 'Свалянето в момента не е активно.' : 'Текущата активност не е потвърдена.') : phases[data.phase] ||
+    (age !== null && age < 15 ? 'Получават се данни…' : age === null ? 'Изчакване на първите данни…' : 'Изчакване на следващи данни…');
+  return { summary, activity: activity + (age !== null ? ' Последни данни преди ' + age + ' сек.' : ''), fraction,
+    quiet: active && data.phase === 'resource-transfer' && (age === null ? at - Date.parse(data.startedAt) >= 60000 : age >= 60) };
+}
+
 function renderGenerations() {
   $('generation-count').textContent = state.generations.length; $('empty-results').hidden = state.generations.length > 0; $('generations-list').replaceChildren();
   for (const generation of [...state.generations].sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))) {
     const card = element('article', undefined, 'generation'), top = element('div', undefined, 'generation-top'), identity = element('div'); identity.append(element('h3', generation.label || '3D модел'));
     const project = state.projects.find(row => row.id === generation.projectId); identity.append(element('p', [project?.name, date(generation.updatedAt)].filter(Boolean).join(' · '), 'generation-date'));
     top.append(identity, element('span', STATUS[generation.status] || 'В процес', `status-pill ${generation.status || ''}`)); card.append(top);
+    const download = downloadView(generation.downloadProgress || generation.job?.facts?.download);
     const track = element('div', undefined, 'progress-track'), fill = element('span', undefined, `progress-${progress(generation)}`); track.append(fill); track.setAttribute('aria-hidden', 'true'); card.append(track);
     const dynamicStage = String(generation.stage || '').startsWith('approval-') ? STAGE.approve : String(generation.stage || '').startsWith('reconcile-') ? STAGE.wait : String(generation.stage || '').startsWith('download-') ? STAGE.download : generation.stage === 'saving-to-wfc' ? STAGE.import : null;
     const stageText = generation.status === 'complete' ? STAGE.complete : generation.status === 'needs-view' ? STAGE['needs-view'] : STAGE[generation.stage] || dynamicStage || STAGE[generation.job?.status] || STAGE[generation.status] || 'Подготовка на модела…'; card.append(element('p', stageText, 'generation-stage'));
+    if (download && /download/.test(String(generation.stage || generation.job?.status || ''))) {
+      card.append(element('p', download.summary, 'download-summary'));
+      const activity = element('p', download.activity, 'download-activity' + (download.quiet ? ' quiet' : ''));
+      card.append(activity);
+      if (download.fraction !== null) {
+        fill.style.width = (64 + 15 * download.fraction) + '%';
+        track.removeAttribute('aria-hidden'); track.setAttribute('role', 'progressbar');
+        track.setAttribute('aria-label', 'Сваляне на SVF файловете');
+        track.setAttribute('aria-valuemin', '0'); track.setAttribute('aria-valuemax', '100');
+        track.setAttribute('aria-valuenow', String(Math.floor(download.fraction * 100)));
+      }
+    }
     if (generation.error) card.append(element('p', errorText(typeof generation.error === 'string' ? { code: generation.error } : generation.error), 'generation-error'));
     const actions = element('div', undefined, 'generation-actions');
     if (generation.status === 'needs-view') {
@@ -62,7 +96,7 @@ function renderGenerations() {
   }
   renderAvailability();
 }
-async function loadGenerations() { const data = await api('/api/generations'), generations = Array.isArray(data.generations) ? data.generations : []; if (JSON.stringify(generations) !== JSON.stringify(state.generations)) { state.generations = generations; renderGenerations(); } }
+async function loadGenerations() { const data = await api('/api/generations'), generations = Array.isArray(data.generations) ? data.generations : []; if (JSON.stringify(generations) !== JSON.stringify(state.generations) || generations.some(row => row.status === 'running')) { state.generations = generations; renderGenerations(); } }
 async function loadWorkspace() {
   $('login-screen').hidden = true; $('workspace-screen').hidden = false; $('account').hidden = false; $('initial-loading').hidden = true;
   const user = state.session.user; $('account-name').textContent = [user.firstName, user.lastName].filter(Boolean).join(' ') || user.email;
@@ -70,7 +104,7 @@ async function loadWorkspace() {
   const [projects, sources, generations] = await Promise.all([api('/api/projects'), api('/api/sources').catch(() => ({ inputs: [] })), api('/api/generations')]); state.projects = Array.isArray(projects.projects) ? projects.projects : []; state.sources = Array.isArray(sources.inputs) ? sources.inputs : []; state.generations = Array.isArray(generations.generations) ? generations.generations : []; renderInputs(); renderGenerations(); schedulePoll();
 }
 function schedulePoll() { clearTimeout(state.timer); if (state.session?.authenticated) state.timer = setTimeout(poll, state.generations.some(row => row.status === 'running') ? 2000 : 8000); }
-async function poll() { if (state.polling || !state.session?.authenticated) return; state.polling = true; try { if (!document.hidden) { await loadGenerations(); $('connection-status').textContent = ''; } } catch (error) { $('connection-status').textContent = error.code === 'AUTH_REQUIRED' ? '' : 'Състоянието временно не може да се обнови.'; } finally { state.polling = false; schedulePoll(); } }
+async function poll() { if (state.polling || !state.session?.authenticated) return; state.polling = true; try { if (!document.hidden) { await loadGenerations(); $('connection-status').textContent = ''; } } catch (error) { $('connection-status').textContent = error.code === 'AUTH_REQUIRED' ? '' : 'Състоянието временно не може да се обнови.'; renderGenerations(); } finally { state.polling = false; schedulePoll(); } }
 async function resumeGeneration(id, rootId) { if (state.busy) return; busy(true, 'Продължаване…'); feedback(''); try { await api(`/api/generations/${encodeURIComponent(id)}/resume`, { method: 'POST', json: rootId ? { rootId } : {} }); await loadGenerations(); schedulePoll(); } catch (error) { feedback(errorText(error), true); if (error.code === 'NETWORK_UNCERTAIN') await loadGenerations().catch(() => {}); } finally { busy(false); renderGenerations(); } }
 $('login-form').addEventListener('submit', async event => { event.preventDefault(); const button = $('login-button'); button.disabled = true; button.textContent = 'Влизане…'; feedback(''); try { await api('/api/session/login', { method: 'POST', json: { email: $('email').value.trim(), password: $('password').value } }); $('password').value = ''; state.session = await api('/api/session'); await loadWorkspace(); } catch (error) { feedback(errorText(error), true); } finally { $('password').value = ''; button.disabled = false; button.textContent = 'Вход'; } });
 $('logout').addEventListener('click', async () => { try { await api('/api/session/logout', { method: 'POST', json: {} }); showLogin(); state.session = await api('/api/session'); feedback(''); } catch (error) { feedback(errorText(error), true); } });
