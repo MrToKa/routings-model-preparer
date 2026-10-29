@@ -434,23 +434,27 @@ export function createAPSProvider({ clientId, clientSecret, region, bucket, name
       const candidates = [...new Map((nearby.length ? nearby : properties).map(record => [derivativeUrn(record.value.urn, context), record])).values()];
       if (candidates.length !== 1) fail(candidates.length === 0 ? 'DOWNLOAD_INCOMPLETE' : 'DERIVATIVE_AMBIGUOUS');
       const propertyUrn = derivativeUrn(candidates[0].value.urn, context);
-      const privateRecords = new Map(), records = [];
+      const privateRecords = new Map(), records = [], resourcePaths = new Set();
       let total = 0;
       async function record(resourcePath, urn, declaredBytes, cached) {
-        const sign = cached ? signed : await signedResource(context, urn, signal, recoverDead);
-        if (declaredBytes !== undefined && sign.bytes !== declaredBytes) {
-          diagnostic('aps-download-rejected', context, 'declared-resource-size', {
-            resourceIndex: records.length, declaredBytes, signedBytes: sign.bytes });
-          fail('DOWNLOAD_INVALID');
-        }
-        total += sign.bytes; if (total > TOTAL_CAP || records.length >= 100000) fail('PACKAGE_LIMIT_EXCEEDED');
+        // SVF declarations already bind sibling sizes. Sign those resources
+        // only when their bytes are requested, after local checkpoint reuse.
+        // The root is cached; the mandatory DB needs one metadata read because
+        // its size is not declared by the SVF envelope.
+        const sign = cached ? signed : declaredBytes === undefined
+          ? await signedResource(context, urn, signal, recoverDead) : null;
+        const bytes = declaredBytes ?? sign.bytes;
+        if (!positive(bytes) || bytes > RAW_CAP) fail('PACKAGE_LIMIT_EXCEEDED');
+        if (sign && sign.bytes !== bytes) fail('DOWNLOAD_INVALID');
+        total += bytes; if (total > TOTAL_CAP || records.length >= 100000) fail('PACKAGE_LIMIT_EXCEEDED');
         const resourceId = 'aps-resource-' + sha(urn);
-        if (privateRecords.has(resourceId) || records.some(item => item.path === resourcePath)) {
+        if (privateRecords.has(resourceId) || resourcePaths.has(resourcePath)) {
           diagnostic('aps-download-rejected', context, 'duplicate-resource', { resourceIndex: records.length });
           fail('DOWNLOAD_INVALID');
         }
-        privateRecords.set(resourceId, { urn, signed: sign, bytes: sign.bytes, ...(cached ? { cached } : {}) });
-        records.push({ path: resourcePath, resourceId, bytes: sign.bytes, ...(cached ? { sha256: sha(cached) } : {}) });
+        resourcePaths.add(resourcePath);
+        privateRecords.set(resourceId, { urn, signed: sign, bytes, resourceIndex: records.length, ...(cached ? { cached } : {}) });
+        records.push({ path: resourcePath, resourceId, bytes, ...(cached ? { sha256: sha(cached) } : {}) });
       }
       await record('output/0/0.svf', root.urn, raw.length, raw);
       for (const item of inspected.resources) {
@@ -469,8 +473,12 @@ export function createAPSProvider({ clientId, clientSecret, region, bucket, name
       const record = plansByContext.get(context.submissionIdentity)?.get(resourceId); if (!record) fail('DOWNLOAD_INVALID');
       if (record.cached) { abortCheck(signal); yield Buffer.from(record.cached); return; }
       for (let attempt = 0; attempt < 2; attempt++) {
-        if (record.signed.expires <= clock.now() + 1000 || attempt) record.signed = await signedResource(context, record.urn, signal, recoverDead);
-        if (record.signed.bytes !== record.bytes) fail('DOWNLOAD_PLAN_CHANGED');
+        if (!record.signed || record.signed.expires <= clock.now() + 1000 || attempt) record.signed = await signedResource(context, record.urn, signal, recoverDead);
+        if (record.signed.bytes !== record.bytes) {
+          diagnostic('aps-download-rejected', context, 'declared-resource-size', {
+            resourceIndex: record.resourceIndex, declaredBytes: record.bytes, signedBytes: record.signed.bytes });
+          fail('DOWNLOAD_PLAN_CHANGED');
+        }
         let response;
         try { response = await rawResponse(context, record.signed, signal, recoverDead); }
         catch (error) { if (error.httpStatus === 403 && attempt === 0) continue; throw error; }

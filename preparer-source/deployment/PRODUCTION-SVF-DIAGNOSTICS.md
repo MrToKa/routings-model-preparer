@@ -84,3 +84,52 @@ The output preserves separators, dot/parent segments, generic folder names,
 file suffixes and character-class flags. Private filenames, source paths, URLs,
 credentials and token values are omitted. The script can be piped to the current
 image; a new image build is not required to run this diagnostic.
+
+
+## Resume large downloads without rebuilding every signed address
+
+The download plan uses the byte counts from the inspected SVF declarations.
+Declared siblings are signed only when the adapter actually requests their bytes,
+after checking an existing local file against the durable size and SHA-256
+checkpoint. The root SVF is still fetched and inspected on each attempt. The
+mandatory property DB still needs one signing/metadata request to discover its
+size, because that size is outside the SVF declarations.
+
+Before any sibling body request, the signed size must equal the immutable plan.
+The same check applies after expiry or the single permitted 403 refresh. The
+plan digest, checkpoint format, total/file limits, read budget and 30-minute
+transport deadline are unchanged. A missing or corrupt local file is fetched
+again; verified completed files do not need another signed address or body.
+
+The log reports `download-plan-ready` and `download-transfer-complete` with
+planned/completed/reused/downloaded counts. A `download-limit-exceeded` event
+reports `transport-deadline` or `resource-limit`, the current phase, resource
+index and elapsed milliseconds. Paths and resource names stay private.
+
+## Inspect the two material documents without another image build
+
+A `ProteinMaterials` asset type can declare both `Materials.json.gz` and
+`ProteinMaterials.json.gz`. Viewer 7.130.0 loads them into separate material
+structures. A filename allowlist change alone does not establish support for
+the second structure or its texture references.
+
+For an existing failed download containing both declarations:
+
+```powershell
+Get-Content -LiteralPath .\tools\diagnose-svf-materials.mjs -Raw |
+    docker exec -i --workdir /opt/preparer routings-preparer-preparer-1 `
+        node --input-type=module - SUBMISSION_IDENTITY_FROM_THE_LOG
+```
+
+This isolated read-only diagnostic fetches the selected root and those two
+material bodies, with read-only OAuth scopes, at most 16 HTTP requests and a
+30-second network deadline. It may read mandatory DB metadata while constructing
+the plan; it does not fetch the DB body, geometry or image bodies. The root and
+each compressed material file are capped at 1 MiB, with at most 16 MiB of inflated
+JSON per material document. No journal, checkpoint, setting or model file is
+written.
+
+Only technical structure and counts are returned: file basenames, actual byte
+counts, encoding, root/group/node field names, material definitions, texture
+shapes and counts of declared/undeclared image strings. Material IDs, tags,
+property values, image filenames, URLs, cookies and credentials are omitted.

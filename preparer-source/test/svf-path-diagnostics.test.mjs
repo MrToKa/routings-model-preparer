@@ -5,6 +5,9 @@ import path from 'node:path';
 import os from 'node:os';
 import { createCipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { gzipSync } from 'node:zlib';
+import { writeZip } from '../../routings-model-package/lib/zip.mjs';
+import { diagnoseSVFMaterials, summarizeMaterialDocument } from '../tools/diagnose-svf-materials.mjs';
 import { contextFromSpec, digest } from '../lib/contracts.mjs';
 import { tinyModel } from './fixtures/model-fixture.mjs';
 import { describeAssetPath, diagnoseSVFPaths } from '../tools/diagnose-svf-paths.mjs';
@@ -31,7 +34,7 @@ for (const [uri, expected] of [
   });
 }
 
-async function fixture(t) {
+async function fixture(t, { materials = false } = {}) {
   const base = await fs.realpath(os.tmpdir()), root = await fs.mkdtemp(path.join(base, 'svf-path-diagnostic-'));
   t.after(async () => { assert.equal(path.dirname(root), base); assert.ok(path.basename(root).startsWith('svf-path-diagnostic-')); await fs.rm(root, { recursive: true, force: true }); });
   const data = path.join(root, 'data'), work = path.join(root, 'work'), core = path.join(data, 'live/core');
@@ -62,7 +65,28 @@ async function fixture(t) {
   const encrypted = Buffer.concat([cipher.update(JSON.stringify({ schemaVersion: 1, wfcOrigin: origin, settings, sessions: {} })), cipher.final()]);
   await fs.writeFile(path.join(privateDirectory, 'workspace.key'), key);
   await fs.writeFile(path.join(privateDirectory, 'workspace.enc'), JSON.stringify({ schemaVersion: 1, iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), ciphertext: encrypted.toString('base64') }));
-  const raw = tinyModel().data.get('output/0/0.svf'), calls = [], outputs = [];
+  let raw = tinyModel().data.get('output/0/0.svf');
+  const resources = new Map();
+  if (materials) {
+    const doc = { name: 'LMVTK Simple Materials', version: '1.0', scene: { SceneUnit: 1, YIsUp: true },
+      materials: { 'private-group-id': { version: 2, userassets: ['private-asset-id'], materials: {
+        'private-node-id': { tag: 'private-material-tag', definition: 'SimplePhong',
+          properties: { uris: { unifiedbitmap_Bitmap: { values: ['Texture Folder/private-image.png'] } } },
+          textures: { diffuse: { uri: 'Texture Folder/private-image.png' } } },
+      } } } };
+    const simple = Buffer.from(JSON.stringify(doc));
+    const protein = Buffer.from(JSON.stringify({ ...doc, name: 'LMVTK Protein Materials' }));
+    resources.set('Materials.json.gz', gzipSync(simple)); resources.set('ProteinMaterials.json.gz', gzipSync(protein));
+    resources.set('properties.db', Buffer.from('mandatory db metadata only'));
+    const manifest = { assets: [...resources.entries()].filter(([name]) => name.endsWith('.gz')).map(([URI, bytes]) =>
+      ({ URI, type: 'ProteinMaterials', size: bytes.length, usize: URI === 'Materials.json.gz' ? simple.length : protein.length })) };
+    manifest.assets.push({ URI: 'Texture Folder/private-image.png', type: 'Autodesk.CloudPlatform.Image', size: 42, usize: 42 });
+    const file = path.join(root, 'materials.svf');
+    await writeZip(file, [{ name: 'manifest.json', data: Buffer.from(JSON.stringify(manifest)) }]);
+    raw = await fs.readFile(file);
+  }
+  resources.set('0.svf', raw);
+  const calls = [], outputs = [];
   const options = { submissionIdentity: context.submissionIdentity, preparerDirectory, env: { PREPARER_DATA_DIR: data, PREPARER_WORK_DIR: work, PREPARER_PACKAGE_MODULE: packageModulePath, PREPARER_WFC_ORIGIN: origin }, emit: value => outputs.push(value), request: async input => {
     calls.push(input); const url = new URL(input.url);
     if (url.pathname === '/authentication/v2/token') {
@@ -71,8 +95,16 @@ async function fixture(t) {
     }
     assert.equal(input.method, 'GET');
     if (url.pathname.endsWith('/manifest')) return json({ urn, status: 'success', derivatives: [{ children: [{ role: '3d', children: [{ mime: 'application/autodesk-svf', urn: derivative }, { mime: 'application/autodesk-db', role: 'Autodesk.CloudPlatform.PropertyDatabase', urn: derivative.replace('0.svf', 'properties.db') }] }] }] });
-    if (url.pathname.endsWith('/signedcookies')) return { ...json({ url: 'https://cdn.derivative.autodesk.com/private/0.svf', size: raw.length, expiration: Date.now() + 60000 }), headers: { 'set-cookie': ['CloudFront-Policy=private-policy; Path=/', 'CloudFront-Signature=private-signature; Path=/', 'CloudFront-Key-Pair-Id=private-key; Path=/'] } };
-    if (url.hostname === 'cdn.derivative.autodesk.com') return { statusCode: 200, headers: { 'content-length': String(raw.length) }, body: raw };
+    if (url.pathname.endsWith('/signedcookies')) {
+      const name = decodeURIComponent(url.pathname).split('/output/0/').at(-1).replace('/signedcookies', '');
+      const bytes = resources.get(name); assert.ok(bytes);
+      return { ...json({ url: 'https://cdn.derivative.autodesk.com/private/' + name, size: bytes.length, expiration: Date.now() + 60000 }),
+        headers: { 'set-cookie': ['CloudFront-Policy=private-policy; Path=/', 'CloudFront-Signature=private-signature; Path=/', 'CloudFront-Key-Pair-Id=private-key; Path=/'] } };
+    }
+    if (url.hostname === 'cdn.derivative.autodesk.com') {
+      const bytes = resources.get(url.pathname.split('/').at(-1)); assert.ok(bytes);
+      return { statusCode: 200, headers: { 'content-length': String(bytes.length) }, body: bytes };
+    }
     throw new Error('Unexpected fixture request');
   } };
   return { root, options, calls, outputs, recordPath, raw };
@@ -104,4 +136,31 @@ test('a different submission cannot be selected or downloaded implicitly', async
   const f = await fixture(t);
   await assert.rejects(diagnoseSVFPaths({ ...f.options, submissionIdentity: 'a'.repeat(64) }), error => error.code === 'DIAGNOSTIC_FAILED_DOWNLOAD_NOT_FOUND');
   assert.equal(f.calls.length, 0); assert.equal(f.outputs.length, 0);
+});
+
+test('material diagnosis reads only the root and two materials and leaves persistent files unchanged', async t => {
+  const f = await fixture(t, { materials: true }), before = await inventory(f.root);
+  const report = await diagnoseSVFMaterials(f.options);
+  assert.equal(report.materials.length, 2);
+  assert.deepEqual(report.materials.map(r => r.basename).sort(), ['Materials.json.gz', 'ProteinMaterials.json.gz']);
+  assert.ok(report.materials.every(r => r.encoding === 'utf-8' && r.rawBytes > 0 && r.inflatedBytes > r.rawBytes));
+  for (const row of report.materials) {
+    assert.equal(row.structure.groupCount, 1); assert.equal(row.structure.nodeCount, 1);
+    assert.equal(row.structure.nonEmptyTextureMaps, 1); assert.equal(row.structure.declaredImageStrings, 2);
+    assert.equal(row.structure.traversalTruncated, false);
+  }
+  assert.equal(f.calls.filter(r => new URL(r.url).hostname === 'cdn.derivative.autodesk.com').length, 3);
+  assert.equal(f.calls.length, 9);
+  assert.equal(f.outputs.length, 1); assert.deepEqual(await inventory(f.root), before);
+  const output = JSON.stringify(f.outputs);
+  for (const forbidden of ['private-group-id', 'private-node-id', 'private-material-tag', 'private-asset-id', 'private-image.png',
+    'fixture-secret', 'fixture-token', 'private-policy', 'private-signature', 'https:', 'Fixture.nwd']) assert.equal(output.includes(forbidden), false);
+});
+test('material summary counts external and unmatched image strings without returning their values', () => {
+  const summary = summarizeMaterialDocument({ materials: { 'private-id': { materials: { 'private-node': {
+    definition: 'SimplePhong', properties: { uris: { bitmap: { values: ['https://private.invalid/file.png', 'not-declared.png'] } } },
+    textures: {},
+  } } } } });
+  assert.equal(summary.externalStrings, 1); assert.equal(summary.unmatchedRasterStrings, 1);
+  assert.equal(JSON.stringify(summary).includes('private'), false); assert.equal(JSON.stringify(summary).includes('not-declared'), false);
 });

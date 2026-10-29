@@ -494,3 +494,26 @@ test('nested image plan rejects case-colliding directory names before writing', 
   await rejects(() => f.adapter.download(f.job, { provider: f.provider, onCheckpoint: f.onCheckpoint }), 'DOWNLOAD_INVALID');
   assert.equal(f.calls.resources.length, 0);
 });
+
+test('transport deadline reports its exact phase and durable count without resource paths', async t => {
+  const logs = []; t.mock.method(process.stderr, 'write', value => { logs.push(JSON.parse(String(value))); return true; });
+  const f = await setup(t), adapter = await createPackageAdapter({ packageApi: publicPackage, workDirectory: path.join(f.root, 'work'), downloadMaxMs: 100 });
+  f.provider.getDownloadPlan = async (_context, { signal }) => { await delay(10000, undefined, { signal }); return f.plan; };
+  await rejects(() => adapter.download(f.job, { provider: f.provider, onCheckpoint: f.onCheckpoint }), 'PACKAGE_LIMIT_EXCEEDED');
+  const row = logs.find(r => r.event === 'download-limit-exceeded');
+  assert.equal(row.check, 'transport-deadline'); assert.equal(row.phase, 'download-plan');
+  assert.equal(row.completedResources, 0); assert.equal(row.limitMs, 100);
+  assert.ok(row.elapsedMs >= 80);
+  assert.equal(JSON.stringify(row).includes(f.root), false);
+  assert.equal(JSON.stringify(row).includes('tiny.nwd'), false);
+});
+
+test('transfer summary counts verified reuse separately from newly downloaded resources', async t => {
+  const logs = []; t.mock.method(process.stderr, 'write', value => { logs.push(JSON.parse(String(value))); return true; });
+  const f = await setup(t);
+  await f.adapter.download(f.job, { provider: f.provider, onCheckpoint: f.onCheckpoint });
+  await f.adapter.download(f.job, { provider: f.provider, previous: f.previous, onCheckpoint: f.onCheckpoint });
+  const rows = logs.filter(r => r.event === 'download-transfer-complete');
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map(r => [r.plannedResources, r.reusedResources, r.downloadedResources, r.completedResources]), [[3, 0, 3, 3], [3, 3, 0, 3]]);
+});
