@@ -362,3 +362,17 @@ for (const toolkit of ['LMVTK 5.0.26.0', 'LMVTK 5.0.43.0']) {
     });
   }
 }
+
+test('full profile accepts the observed identical millimetre display-unit pair with unchanged bytes', async t => {
+  const metadataText = '{"version":"1.0","metadata":{"default display unit":{"value":"mm"},"default display unit":{"value":"mm"}}}';
+  const f = await fixture(t, { metadataText }), before = Buffer.from(f.data.get(PREFIX + '0.svf'));
+  assert.equal((await validateProfile(f.provider)).status, 'PASS');
+  assert.deepEqual(f.data.get(PREFIX + '0.svf'), before);
+});
+for (const units of [['m', 'mm'], ['mm', 'm'], ['mm', 'mm', 'mm'], ['cm', 'cm']]) {
+  test('full profile rejects display-unit sequence ' + units.join('/'), async t => {
+    const metadataText = '{"version":"1.0","metadata":{' + units.map(unit => '"default display unit":{"value":"' + unit + '"}').join(',') + '}}';
+    const f = await fixture(t, { metadataText });
+    await rejectsCode(() => validateProfile(f.provider), 'INVALID_MANIFEST');
+  });
+}

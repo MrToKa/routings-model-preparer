@@ -106,3 +106,19 @@ for (const [name, mutate, fields] of [
     assert.ok(!messages.join('').includes('PRIVATE_'));
   });
 }
+
+test('inspection accepts one identical millimetre display-unit duplicate without rewriting the SVF', async t => {
+  const metadata = '{"version":"1.0","metadata":{"default display unit":{"value":"mm"},"default display unit":{"value":"mm"}}}';
+  const raw = await envelope(t, { metadata, mutate: m => { m.toolkitversion = 'LMVTK 5.0.43.0'; } }), before = Buffer.from(raw);
+  assert.equal((await inspectSvfEnvelope(raw)).status, 'INSPECTED'); assert.deepEqual(raw, before);
+});
+for (const [label, metadata] of [
+  ['mixed metre/millimetre', '{"version":"1.0","metadata":{"default display unit":{"value":"m"},"default display unit":{"value":"mm"}}}'],
+  ['mixed millimetre/metre', '{"version":"1.0","metadata":{"default display unit":{"value":"mm"},"default display unit":{"value":"m"}}}'],
+  ['third millimetre record', '{"version":"1.0","metadata":{"default display unit":{"value":"mm"},"default display unit":{"value":"mm"},"default display unit":{"value":"mm"}}}'],
+  ['unapproved centimetres', '{"version":"1.0","metadata":{"default display unit":{"value":"cm"},"default display unit":{"value":"cm"}}}'],
+  ['duplicate distance unit', '{"version":"1.0","metadata":{"distance unit":{"value":"mm"},"distance unit":{"value":"mm"}}}'],
+  ['extra record field', '{"version":"1.0","metadata":{"default display unit":{"value":"mm","extra":0},"default display unit":{"value":"mm","extra":0}}}'],
+]) test('inspection still rejects ' + label, async t => {
+  await rejects(inspectSvfEnvelope(await envelope(t, { metadata })), 'INVALID_MANIFEST');
+});

@@ -103,7 +103,7 @@ The supported profile validates its known asset types/typeset tuples, embedded `
 
 The supplemental Protein document permits the observed typed SimplePhong, Generic and UnifiedBitmap catalog records. In Viewer 7.130.0 only Prism definitions select a Protein group for rendering; this profile rejects those definitions. Catalog thumbnails and bitmap strings are therefore inert metadata and do not require additional image downloads. The Simple Materials bitmap references are verified independently.
 
-The single known duplicate exception is the equal-valued `metadata["default display unit"] = {"value":"m"}` in embedded Autodesk metadata. Conflicting duplicates and reference-bearing duplicates are rejected. Positive declared inflated sizes must match; a property declaration with `usize: 0` leaves that assertion unspecified while actual inflation limits are still enforced.
+The sole duplicate-key exception permits one identical pair of `metadata["default display unit"]` records containing only `{"value":"m"}` or only `{"value":"mm"}`. Mixed units, a third occurrence and other duplicate keys remain invalid. Conflicting duplicates and reference-bearing duplicates are rejected. Positive declared inflated sizes must match; a property declaration with `usize: 0` leaves that assertion unspecified while actual inflation limits are still enforced.
 
 Raw gzip bytes remain unchanged even when a `.pf`, `.bin` or `.pack` file is internally compressed. Raw hashes, raw asset sizes, ZIP compressed sizes and declared inflated sizes are checked in their separate scopes. Property text containing a URL is inert data, not automatically a loader reference.
 
