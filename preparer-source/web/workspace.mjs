@@ -55,7 +55,7 @@ function downloadView(data, at = Date.now()) {
     inventory: 'Проверка на свалените файлове…', 'profile-validation': 'Проверка на SVF съдържанието…' };
   const age = Number.isFinite(Date.parse(data.lastByteAt)) ? Math.max(0, Math.floor((at - Date.parse(data.lastByteAt)) / 1000)) : null;
   const active = data.status === 'running';
-  const activity = !active ? 'Свалянето в момента не е активно.' : phases[data.phase] ||
+  const activity = !active ? (['failed', 'interrupted', 'complete'].includes(data.status) ? 'Свалянето в момента не е активно.' : 'Текущата активност не е потвърдена.') : phases[data.phase] ||
     (age !== null && age < 15 ? 'Получават се данни…' : age === null ? 'Изчакване на първите данни…' : 'Изчакване на следващи данни…');
   return { summary, activity: activity + (age !== null ? ' Последни данни преди ' + age + ' сек.' : ''), fraction,
     quiet: active && data.phase === 'resource-transfer' && (age === null ? at - Date.parse(data.startedAt) >= 60000 : age >= 60) };
