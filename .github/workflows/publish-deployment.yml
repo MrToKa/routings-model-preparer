@@ -34,7 +34,8 @@ jobs:
         run: |
           docker run --rm --network none --volume "$PWD:/source:ro" --workdir /source node@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5 node --test scripts/cicd/release.test.mjs
           # Tests create their own temporary state, outside the read-only source.
-          docker run --rm --network none --volume "$PWD:/source:ro" --workdir /source node@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5 node --test --test-concurrency=1 'preparer-source/test/*.test.mjs' 'preparer-source/app-test/*.test.mjs' 'routings-model-package/test/*.test.mjs'
+          docker run --rm --network none --volume "$PWD:/source:ro" --workdir /source/preparer-source node@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5 node --test --test-concurrency=1 'test/*.test.mjs' 'app-test/*.test.mjs'
+          docker run --rm --network none --volume "$PWD:/source:ro" --workdir /source/routings-model-package node@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5 node --test --test-concurrency=1 'test/*.test.mjs'
       - name: Verify SDK inventory and prepare allowlisted build inputs
         run: |
           docker run --rm --network none --volume "$PWD:/workspace" --workdir /workspace node@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5 node preparer/preparer-source/deployment/prepare-runtime.mjs --source sdk-source/viewer-runtime/sdk/7.130.0 --target preparer/preparer-source/deployment/preview-runtime
