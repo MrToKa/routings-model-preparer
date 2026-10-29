@@ -97,9 +97,13 @@ Fixed v1 profile:
 | `format` | `svf` |
 | `sdkVersion` | `7.130.0` |
 | `entrypoint` | `resources/output/0/0.svf` |
-| Embedded SVF manifest | `manifestversion = 2`, `toolkitversion = "LMVTK 5.0.26.0"` |
+| Embedded SVF manifest | `manifestversion = 2`, `toolkitversion = "LMVTK 5.0.26.0"` or `"LMVTK 5.0.43.0"` |
 
-The supported profile validates its known asset types/typeset tuples, plain sibling resource references, embedded `metadata.json`, recognized gzip JSON structures and empty SimplePhong material texture maps. Its single known duplicate exception is the equal-valued `metadata["default display unit"] = {"value":"m"}` in embedded Autodesk metadata. Conflicting duplicates and reference-bearing duplicates are rejected. Unknown profiles, toolkit/reference declarations, nonempty texture maps and other unsupported structures fail explicitly.
+The supported profile validates its known asset types/typeset tuples, embedded `metadata.json`, recognized gzip JSON structures and exact declared resource closure. Material assets may include both `Materials.json.gz` (LMVTK Simple Materials 1.0) and its supplemental `ProteinMaterials.json.gz` (LMVTK Protein Materials 1.0). Active SimplePhong texture slots connect to one local UnifiedBitmap, whose URI must resolve to a declared PNG/JPEG asset by ID or exact relative URI. Nested raster paths may contain bounded ASCII spaces. Unknown definitions, texture slots, graph targets, cycles, external active texture addresses and undeclared images are rejected. Raw material, SVF and image bytes remain unchanged.
+
+The supplemental Protein document permits the observed typed SimplePhong, Generic and UnifiedBitmap catalog records. In Viewer 7.130.0 only Prism definitions select a Protein group for rendering; this profile rejects those definitions. Catalog thumbnails and bitmap strings are therefore inert metadata and do not require additional image downloads. The Simple Materials bitmap references are verified independently.
+
+The single known duplicate exception is the equal-valued `metadata["default display unit"] = {"value":"m"}` in embedded Autodesk metadata. Conflicting duplicates and reference-bearing duplicates are rejected. Positive declared inflated sizes must match; a property declaration with `usize: 0` leaves that assertion unspecified while actual inflation limits are still enforced.
 
 Raw gzip bytes remain unchanged even when a `.pf`, `.bin` or `.pack` file is internally compressed. Raw hashes, raw asset sizes, ZIP compressed sizes and declared inflated sizes are checked in their separate scopes. Property text containing a URL is inert data, not automatically a loader reference.
 
