@@ -369,6 +369,7 @@ export async function createModelPreparer({ dataDirectory, workDirectory, provid
   return Object.freeze({
     captureJob, approveCost, prepare, reconcile, waitForDerivative, download, buildPackage, registerPackage,
     readJob: async id => clone(await getJob(id)),
+    readDownloadProgress(id) { validateId(id); return adapter.getDownloadProgress?.(id) ?? null; },
     listJobs: async () => (await store.list('job')).map(job => clone(validateStoredJob(job))),
     stop(id) { validateId(id); const requests = active.get(id); if (requests) for (const controller of requests.values()) controller.abort(); return { localAbortRequested: !!requests?.size, remoteCancellationConfirmed: false }; },
   });

@@ -332,7 +332,12 @@ export async function createWorkspaceService(options = {}) {
     }
     if (route === '/api/generations' && req.method === 'GET') {
       const rows = [];
-      for (const row of generations.values()) if (row.ownerId === auth.user.id || auth.user.isAdmin) { try { await security.requireProject(auth, row.projectId); rows.push(dto(row)); } catch (error) { if (error.code !== 'PROJECT_FORBIDDEN') throw error; } }
+      for (const row of generations.values()) if (row.ownerId === auth.user.id || auth.user.isAdmin) { try { await security.requireProject(auth, row.projectId); const result = dto(row);
+        if (row.status === 'running' && row.jobId && inner) {
+          try { result.downloadProgress = (await innerJSON('/api/jobs/' + row.jobId + '/download-progress')).progress; }
+          catch { result.downloadProgress = null; }
+        }
+        rows.push(result); } catch (error) { if (error.code !== 'PROJECT_FORBIDDEN') throw error; } }
       send(res, 200, { generations: rows.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)) }); return;
     }
     if (route === '/api/generations' && req.method === 'POST') {

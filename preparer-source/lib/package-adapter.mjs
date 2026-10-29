@@ -160,6 +160,7 @@ export async function createPackageAdapter({ packageModulePath, packageApi, work
   for (const name of ['packModel', 'verifyPackage', 'validateProfile']) if (typeof packageApi?.[name] !== 'function') fail('CONFIGURATION_INVALID');
   if (!packageApi.DEFAULT_LIMITS || ['maxFileBytes', 'maxTotalResourceBytes', 'maxFiles', 'maxManifestBytes', 'maxNestedBytes', 'maxMs'].some(name => !bytes(packageApi.DEFAULT_LIMITS[name]) || packageApi.DEFAULT_LIMITS[name] === 0)) fail('CONFIGURATION_INVALID');
   const limits = packageApi.DEFAULT_LIMITS;
+  const liveDownloads = new Map();
   const work = (await inspectLocal(validateLocalPath(workDirectory, { label: 'work directory' }), { directory: true, create: true })).path;
 
   function jobContext(job) {
@@ -183,6 +184,19 @@ export async function createPackageAdapter({ packageModulePath, packageApi, work
     let operationSignal = signal ? AbortSignal.any([signal, downloadBudget.signal]) : downloadBudget.signal;
     let state, phase = 'manifest', plannedResources = 0, resourceIndex = -1, reusedResources = 0, downloadedResources = 0;
     const startedAt = Date.now();
+    let currentBytes = 0, plannedBytes = 0, lastByteAt = null, lastPublished = 0, liveStatus = 'running';
+    const confirmed = clone(previous?.checkpoints ?? {});
+    liveDownloads.delete(job.jobId);
+    while (liveDownloads.size >= 64) liveDownloads.delete(liveDownloads.keys().next().value);
+    function publish(force = false) {
+      const at = Date.now(); if (!force && at - lastPublished < 1000) return;
+      lastPublished = at;
+      liveDownloads.set(job.jobId, { status: liveStatus, phase, plannedResources, plannedBytes,
+        completedResources: Object.keys(confirmed).length,
+        completedBytes: Object.values(confirmed).reduce((sum, row) => sum + row.bytes, 0),
+        currentBytes, lastByteAt, startedAt: new Date(startedAt).toISOString(), updatedAt: new Date(at).toISOString() });
+    }
+    publish(true);
     const progress = (event, facts = {}) => {
       try { process.stderr.write(JSON.stringify({ event, submissionIdentity: frozen.submissionIdentity, phase,
         plannedResources, resourceIndex, completedResources: Object.keys(state?.checkpoints ?? {}).length,
@@ -196,9 +210,10 @@ export async function createPackageAdapter({ packageModulePath, packageApi, work
       if (rootId === undefined) { if (observation.roots.length !== 1) fail('DERIVATIVE_AMBIGUOUS'); rootId = observation.roots[0].rootId; }
       identifier(rootId, 'DERIVATIVE_AMBIGUOUS');
       if (!observation.roots.some(root => root.rootId === rootId)) fail('DERIVATIVE_AMBIGUOUS');
-      phase = 'download-plan';
+      phase = 'download-plan'; publish(true);
       const plan = validatePlan(await abortable(provider.getDownloadPlan(frozen, { rootId, signal: operationSignal }), operationSignal), frozen, rootId, limits);
       plannedResources = plan.resources.length;
+      plannedBytes = plan.resources.reduce((sum, row) => sum + row.bytes, 0);
       const planDigest = digest(plan);
       const jobRoot = path.join(work, job.jobId);
       const base = path.join(jobRoot, planDigest);
@@ -211,13 +226,13 @@ export async function createPackageAdapter({ packageModulePath, packageApi, work
       state = { schemaVersion: 1, status: 'downloading', planDigest, rootId, checkpoints: clone(previous?.checkpoints ?? {}), modelDirectory };
       // Parent's store is authoritative. No additional download ledger is read.
       await onCheckpoint(clone(state));
-      progress('download-plan-ready');
+      progress('download-plan-ready'); publish(true);
       for (const filename of ['model.json', 'integrity.json']) {
         const target = path.join(modelDirectory, filename);
         if (await optionalFile(target)) await fs.unlink(target);
       }
       for (const resource of plan.resources) {
-        resourceIndex++; phase = 'checkpoint-verification';
+        resourceIndex++; phase = 'checkpoint-verification'; publish(true);
         abortCheck(operationSignal);
         const filename = path.join(modelDirectory, ...resource.path.split('/'));
         await inspectLocal(path.dirname(filename), { directory: true, create: true });
@@ -228,7 +243,7 @@ export async function createPackageAdapter({ packageModulePath, packageApi, work
           reusable = actual.bytes === resource.bytes && actual.bytes === checkpoint.bytes && actual.sha256 === checkpoint.sha256 && (resource.sha256 === undefined || resource.sha256 === actual.sha256);
         }
         if (reusable) { reusedResources++; continue; }
-        phase = 'resource-transfer';
+        phase = 'resource-transfer'; delete confirmed[resource.path]; currentBytes = 0; publish(true);
         delete state.checkpoints[resource.path];
         const temporary = path.join(partsDirectory, `resource-${randomUUID()}.part`);
         const handle = await fs.open(temporary, 'wx', 0o600);
@@ -247,6 +262,7 @@ export async function createPackageAdapter({ packageModulePath, packageApi, work
             total += chunk.length;
             if (total > resource.bytes || total > limits.maxFileBytes) fail('PACKAGE_LIMIT_EXCEEDED');
             streamHash.update(chunk);
+            if (chunk.length) { const firstByte = currentBytes === 0; currentBytes = total; lastByteAt = new Date().toISOString(); publish(firstByte); }
             let offset = 0;
             while (offset < chunk.length) { const written = await handle.write(chunk, offset, chunk.length - offset); if (!written.bytesWritten) fail('DOWNLOAD_INVALID'); offset += written.bytesWritten; }
           }
@@ -258,9 +274,10 @@ export async function createPackageAdapter({ packageModulePath, packageApi, work
           await fs.rename(temporary, filename);
           state.checkpoints[resource.path] = { bytes: total, sha256, resourceId: resource.resourceId };
           // A failed checkpoint commit blocks all later dependent work.
-          phase = 'checkpoint-commit';
+          phase = 'checkpoint-commit'; publish(true);
           await onCheckpoint(clone(state));
-          downloadedResources++;
+          confirmed[resource.path] = clone(state.checkpoints[resource.path]); currentBytes = 0;
+          downloadedResources++; publish(true);
         } finally {
           await handle.close().catch(() => {});
           try { iterable?.destroy?.(); } catch { /* Foreign cleanup must not expose provider messages. */ }
@@ -269,7 +286,7 @@ export async function createPackageAdapter({ packageModulePath, packageApi, work
           await fs.rm(temporary, { force: true });
         }
       }
-      phase = 'inventory';
+      phase = 'inventory'; publish(true);
       const expected = new Set(plan.resources.map(row => row.path)), expectedDirectories = new Set();
       for (const resource of expected) {
         const parts = resource.split('/');
@@ -303,7 +320,7 @@ export async function createPackageAdapter({ packageModulePath, packageApi, work
       abortCheck(operationSignal);
       clearTimeout(downloadTimer);
       progress('download-transfer-complete');
-      phase = 'profile-validation';
+      phase = 'profile-validation'; publish(true);
       operationSignal = signal;
       try {
         await packageApi.validateProfile({ resources: inventory,
@@ -321,8 +338,10 @@ export async function createPackageAdapter({ packageModulePath, packageApi, work
       abortCheck(operationSignal);
       state.status = 'downloaded';
       await onCheckpoint(clone(state));
+      liveStatus = 'complete'; publish(true);
       return { modelDirectory, download: clone(state) };
     } catch (error) {
+      liveStatus = signal?.aborted ? 'interrupted' : 'failed'; currentBytes = 0; publish(true);
       // The orchestrator records interruption/error. Do not retry a failed
       // state commit or replace durable checkpoint evidence in this catch.
       if (signal?.aborted) throw new CoreError('LOCAL_ABORTED');
@@ -366,5 +385,6 @@ export async function createPackageAdapter({ packageModulePath, packageApi, work
     try { return await packageApi.verifyPackage(target, { signal }); }
     catch (error) { if (signal?.aborted) throw new CoreError('LOCAL_ABORTED'); throw packageFailure(error); }
   }
-  return Object.freeze({ download, buildPackage, registerPackage });
+  return Object.freeze({ download, buildPackage, registerPackage,
+    getDownloadProgress(jobId) { const value = liveDownloads.get(jobId); return value ? clone(value) : null; } });
 }

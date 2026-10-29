@@ -554,3 +554,39 @@ test('both material document basenames survive adapter download, packaging and i
   for (const name of ['Materials.json.gz', 'ProteinMaterials.json.gz']) assert.deepEqual(
     await fs.readFile(path.join(result.modelDirectory, 'output/0', name)), f.model.data.get('output/0/' + name));
 });
+
+test('live download progress reports bytes before checkpoint commit and reads never write checkpoints', async t => {
+  const f = await setup(t), original = f.provider.readResource;
+  let release, entered;
+  const gate = new Promise(resolve => { release = resolve; }), ready = new Promise(resolve => { entered = resolve; });
+  f.provider.readResource = async function* (context, options) {
+    const row = f.model.resources.find(r => r.resourceId === options.resourceId);
+    if (row.path.endsWith('0.pf')) { yield f.model.data.get(row.path).subarray(0, 1); await delay(1100); entered(); await gate; yield f.model.data.get(row.path).subarray(1); }
+    else yield* original(context, options);
+  };
+  let commits = 0;
+  const pending = f.adapter.download(f.job, { provider: f.provider, onCheckpoint: async state => { commits++; await f.onCheckpoint(state); } });
+  await ready;
+  const before = commits, status = f.adapter.getDownloadProgress(f.job.jobId);
+  assert.equal(status.status, 'running'); assert.equal(status.phase, 'resource-transfer');
+  assert.equal(status.plannedResources, 3); assert.equal(status.completedResources, 0);
+  assert.equal(status.currentBytes, 1); assert.ok(status.lastByteAt);
+  status.currentBytes = 999;
+  assert.equal(f.adapter.getDownloadProgress(f.job.jobId).currentBytes, 1);
+  assert.equal(commits, before);
+  assert.equal(JSON.stringify(status).includes(f.root), false);
+  release(); await pending;
+  const done = f.adapter.getDownloadProgress(f.job.jobId);
+  assert.equal(done.status, 'complete'); assert.equal(done.completedResources, 3);
+  assert.equal(done.currentBytes, 0); assert.equal(done.completedBytes, done.plannedBytes);
+});
+test('interrupted progress stops reporting active transfer and resume keeps verified checkpoints', async t => {
+  let failOnce = true;
+  const f = await setup(t, { interrupt: row => row.path.endsWith('0.svf') && failOnce && (failOnce = false, true) });
+  await rejects(() => f.adapter.download(f.job, { provider: f.provider, onCheckpoint: f.onCheckpoint }), 'PROVIDER_FAILURE');
+  const stopped = f.adapter.getDownloadProgress(f.job.jobId);
+  assert.equal(stopped.status, 'failed'); assert.equal(stopped.completedResources, 1); assert.equal(stopped.currentBytes, 0);
+  await f.adapter.download(f.job, { provider: f.provider, previous: f.previous, onCheckpoint: f.onCheckpoint });
+  assert.equal(f.adapter.getDownloadProgress(f.job.jobId).completedResources, 3);
+  assert.equal(f.calls.resources.filter(p => p.endsWith('0.pf')).length, 1);
+});
