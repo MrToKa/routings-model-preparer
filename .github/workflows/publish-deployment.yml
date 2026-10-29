@@ -1,0 +1,79 @@
+name: Publish tested deployment
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: deployment-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  verify-and-build:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    steps: &image_steps
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          path: preparer
+      - name: Fetch the trusted SDK from an immutable WFC source revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: MrToKa/WFC
+          ref: 97a48f28e84b8d7d1bfdba31a47acb1b46470088
+          persist-credentials: false
+          path: sdk-source
+          sparse-checkout: viewer-runtime/sdk/7.130.0
+      - name: Test using the pinned Node 24 runtime without Autodesk access
+        working-directory: preparer
+        run: |
+          docker run --rm --network none --volume "$PWD:/source:ro" --workdir /source node@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5 node --test scripts/cicd/release.test.mjs
+          # Tests create their own temporary state, outside the read-only source.
+          docker run --rm --network none --volume "$PWD:/source:ro" --workdir /source node@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5 node --test --test-concurrency=1 'preparer-source/test/*.test.mjs' 'preparer-source/app-test/*.test.mjs' 'routings-model-package/test/*.test.mjs'
+      - name: Verify SDK inventory and prepare allowlisted build inputs
+        run: |
+          docker run --rm --network none --volume "$PWD:/workspace" --workdir /workspace node@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5 node preparer/preparer-source/deployment/prepare-runtime.mjs --source sdk-source/viewer-runtime/sdk/7.130.0 --target preparer/preparer-source/deployment/preview-runtime
+          docker run --rm --network none --volume "$PWD:/workspace" --workdir /workspace node@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5 node preparer/preparer-source/deployment/prepare-build.mjs preparer/preparer-source preparer/routings-model-package preparer/preparer-source/deployment/ci-build
+      - name: Define registry path
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/routings-model-preparer" >> "$GITHUB_ENV"
+      - name: Build or publish the verified image
+        env:
+          PUBLISH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+        run: |
+          set -euo pipefail
+          output=(--load)
+          if [ "$PUBLISH" = true ]; then
+            printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+            output=(--push)
+          fi
+          docker buildx build "${output[@]}" --network none \
+            --build-context preparer=preparer/preparer-source/deployment/ci-build/preparer \
+            --build-context package=preparer/preparer-source/deployment/ci-build/package \
+            --build-context preview=preparer/preparer-source/deployment/preview-runtime \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --tag "$IMAGE:$GITHUB_SHA" --metadata-file /tmp/preparer-metadata.json \
+            --file preparer/preparer-source/deployment/Dockerfile preparer/preparer-source/deployment
+      - name: Publish the complete deployment manifest last
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          set -euo pipefail
+          node preparer/scripts/cicd/release.mjs preparer-v1 /tmp/deployment.json "preparer=$IMAGE=/tmp/preparer-metadata.json"
+          if ! gh release view "deploy-$GITHUB_SHA" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "deploy-$GITHUB_SHA" /tmp/deployment.json --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Deployment $GITHUB_SHA" --notes 'Tested image and pinned SDK 7.130.0. See docs/AUTOMATIC-DEPLOYMENT.md.' --prerelease
+          fi
+  publish:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: write
+      packages: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps: *image_steps
