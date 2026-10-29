@@ -38,8 +38,8 @@ jobs:
           docker run --rm --network none --volume "$PWD:/source:ro" --workdir /source/routings-model-package node@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5 node --test --test-concurrency=1 'test/*.test.mjs'
       - name: Verify SDK inventory and prepare allowlisted build inputs
         run: |
-          docker run --rm --network none --volume "$PWD:/workspace" --workdir /workspace node@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5 node preparer/preparer-source/deployment/prepare-runtime.mjs --source sdk-source/viewer-runtime/sdk/7.130.0 --target preparer/preparer-source/deployment/preview-runtime
-          docker run --rm --network none --volume "$PWD:/workspace" --workdir /workspace node@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5 node preparer/preparer-source/deployment/prepare-build.mjs preparer/preparer-source preparer/routings-model-package preparer/preparer-source/deployment/ci-build
+          docker run --rm --user "$(id -u):$(id -g)" --network none --volume "$PWD:/workspace" --workdir /workspace node@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5 node preparer/preparer-source/deployment/prepare-runtime.mjs --source sdk-source/viewer-runtime/sdk/7.130.0 --target preparer/preparer-source/deployment/preview-runtime
+          docker run --rm --user "$(id -u):$(id -g)" --network none --volume "$PWD:/workspace" --workdir /workspace node@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5 node preparer/preparer-source/deployment/prepare-build.mjs preparer/preparer-source preparer/routings-model-package preparer/preparer-source/deployment/ci-build
       - name: Define registry path
         run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/routings-model-preparer" >> "$GITHUB_ENV"
       - name: Build or publish the verified image
