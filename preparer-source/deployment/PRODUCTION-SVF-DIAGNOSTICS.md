@@ -133,3 +133,21 @@ Only technical structure and counts are returned: file basenames, actual byte
 counts, encoding, root/group/node field names, material definitions, texture
 shapes and counts of declared/undeclared image strings. Material IDs, tags,
 property values, image filenames, URLs, cookies and credentials are omitted.
+
+
+## Inspect a rejected duplicate JSON key without restarting
+
+A `duplicate-json-key` rejection does not identify which embedded document or
+key was rejected. Run the isolated helper against the failed submission:
+
+```powershell
+Get-Content .\tools\diagnose-svf-duplicates.mjs -Raw | docker exec -i --workdir /opt/preparer routings-preparer-preparer-1 node --input-type=module - SUBMISSION_IDENTITY
+```
+
+It reads only the root SVF, with the same read-only state access, OAuth scopes,
+eight-request cap, 30-second deadline and 1 MiB envelope cap as the path helper.
+It inspects manifest.json and metadata.json and returns duplicate count, embedded
+entry, allowlisted technical key, key fingerprint, value types, structural
+equality and allowlisted unit codes. Unknown keys and all other values remain
+private. At most 64 duplicates are reported. It does not change the strict
+runtime parser, approve a package, fetch sibling resources or write state.

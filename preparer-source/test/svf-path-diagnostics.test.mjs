@@ -6,10 +6,11 @@ import os from 'node:os';
 import { createCipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
-import { writeZip } from '../../routings-model-package/lib/zip.mjs';
+import { writeZip, openZip } from '../../routings-model-package/lib/zip.mjs';
 import { diagnoseSVFMaterials, summarizeMaterialDocument } from '../tools/diagnose-svf-materials.mjs';
 import { contextFromSpec, digest } from '../lib/contracts.mjs';
 import { tinyModel } from './fixtures/model-fixture.mjs';
+import { diagnoseSVFDuplicates } from '../tools/diagnose-svf-duplicates.mjs';
 import { describeAssetPath, diagnoseSVFPaths } from '../tools/diagnose-svf-paths.mjs';
 
 const sha = value => createHash('sha256').update(value).digest('hex');
@@ -34,7 +35,7 @@ for (const [uri, expected] of [
   });
 }
 
-async function fixture(t, { materials = false } = {}) {
+async function fixture(t, { materials = false, duplicateMetadata = false } = {}) {
   const base = await fs.realpath(os.tmpdir()), root = await fs.mkdtemp(path.join(base, 'svf-path-diagnostic-'));
   t.after(async () => { assert.equal(path.dirname(root), base); assert.ok(path.basename(root).startsWith('svf-path-diagnostic-')); await fs.rm(root, { recursive: true, force: true }); });
   const data = path.join(root, 'data'), work = path.join(root, 'work'), core = path.join(data, 'live/core');
@@ -84,6 +85,13 @@ async function fixture(t, { materials = false } = {}) {
     const file = path.join(root, 'materials.svf');
     await writeZip(file, [{ name: 'manifest.json', data: Buffer.from(JSON.stringify(manifest)) }]);
     raw = await fs.readFile(file);
+  }
+  if (duplicateMetadata) {
+    const input = await openZip(raw), entries = [];
+    try { for (const entry of input.entries.values()) if (!entry.isDirectory) entries.push({ name: entry.name, data: await input.read(entry.name) }); }
+    finally { await input.close(); }
+    entries.find(e => e.name === 'metadata.json').data = Buffer.from('{"version":"1.0","metadata":{"default display unit":{"value":"mm"},"default display unit":{"value":"mm"},"private-key":{"value":"private-value"},"private-key":{"value":"private-other"}}}');
+    const filename = path.join(root, 'duplicate.svf'); await writeZip(filename, entries); raw = await fs.readFile(filename);
   }
   resources.set('0.svf', raw);
   const calls = [], outputs = [];
@@ -163,4 +171,22 @@ test('material summary counts external and unmatched image strings without retur
   } } } } });
   assert.equal(summary.externalStrings, 1); assert.equal(summary.unmatchedRasterStrings, 1);
   assert.equal(JSON.stringify(summary).includes('private'), false); assert.equal(JSON.stringify(summary).includes('not-declared'), false);
+});
+
+test('duplicate diagnosis reports entry, technical key, equality and units without changing state or printing private values', async t => {
+  const f = await fixture(t, { duplicateMetadata: true }), before = await inventory(f.root);
+  const report = await diagnoseSVFDuplicates(f.options);
+  assert.equal(report.duplicateCount, 2);
+  assert.deepEqual(report.duplicates.map(r => [r.entry, r.key, r.equalValues, r.previousUnit, r.nextUnit]), [
+    ['metadata.json', 'default display unit', true, 'mm', 'mm'],
+    ['metadata.json', '<other-key>', false, null, null],
+  ]);
+  assert.equal(f.calls.length, 4); assert.equal(f.outputs.length, 1);
+  assert.deepEqual(await inventory(f.root), before);
+  const output = JSON.stringify(f.outputs);
+  for (const secret of ['private-key', 'private-value', 'private-other', 'fixture-secret', 'fixture-token', 'private-policy', 'https:']) assert.equal(output.includes(secret), false);
+});
+test('duplicate diagnosis preserves a valid root without inventing a duplicate', async t => {
+  const f = await fixture(t), report = await diagnoseSVFDuplicates(f.options);
+  assert.equal(report.duplicateCount, 0); assert.equal(f.calls.length, 4);
 });

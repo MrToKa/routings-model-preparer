@@ -6,6 +6,7 @@ on:
       - 'preparer-source/lib/**'
       - 'preparer-source/test/**'
       - 'preparer-source/tools/diagnose-svf-materials.mjs'
+      - 'preparer-source/tools/diagnose-svf-duplicates.mjs'
       - 'preparer-source/app/**'
       - 'preparer-source/app-test/**'
       - 'preparer-source/web/**'
