@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
+import { createPackageAdapter } from '../lib/package-adapter.mjs';
 import { createAPSProvider } from '../lib/aps-provider.mjs';
 import { isAPSProvider } from '../lib/aps-capabilities.mjs';
 import { isFakeProvider } from '../lib/providers.mjs';
@@ -165,9 +166,11 @@ test('download diagnostics distinguish a signed-size mismatch without disclosing
   const f = await fixture(t, { providerOptions: { packageApi: { ...packageApi, inspectSvfEnvelope: async (...args) => {
     const value = await packageApi.inspectSvfEnvelope(...args); value.resources[0].bytes++; return value;
   } } } });
-  await rejects(f.provider.getDownloadPlan(f.context), 'DOWNLOAD_INVALID');
+  const plan = await f.provider.getDownloadPlan(f.context);
+  await rejects(readAll(f.provider, f.context, plan.resources.find(r => r.path === 'output/0/0.pf').resourceId), 'DOWNLOAD_PLAN_CHANGED');
   assert.deepEqual(logs, [{ event: 'aps-download-rejected', submissionIdentity: f.context.submissionIdentity,
     check: 'declared-resource-size', resourceIndex: 1, declaredBytes: 42, signedBytes: 41 }]);
+  assert.equal(f.calls.filter(c => new URL(c.url).hostname === 'cdn.derivative.autodesk.com').length, 1);
   assert.equal(f.provider.counts.cloudDataMutations, 0);
 });
 test('download diagnostics distinguish an HTTP length mismatch before inspecting SVF bytes', async t => {
@@ -233,7 +236,7 @@ test('legacy viewable branches sharing exact SVF and property DB pointers descri
   assert.deepEqual(plan.resources.map(item => item.path), ['output/0/0.pf', 'output/0/0.svf', 'output/0/properties.db']);
   assert.equal(plan.rootId, observation.roots[0].rootId);
   assert.equal(f.provider.counts.cloudDataMutations, 0);
-  assert.equal(f.calls.filter(call => call.url.includes('/signedcookies')).length, 3);
+  assert.equal(f.calls.filter(call => call.url.includes('/signedcookies')).length, 2);
 });
 
 test('deduplicating legacy pointers still rejects a foreign SVF in another branch', async t => {
@@ -350,4 +353,78 @@ test('a declared PNG folder and filename with spaces retain exact URIs, bytes an
     read: async p => downloaded.get(p), stream: p => Readable.from([downloaded.get(p)]) });
   assert.equal(checked.status, 'PASS'); assert.equal(f.provider.counts.cloudDataMutations, 0);
   assert.deepEqual(downloaded.get('resources/output/0/0.svf'), image.svf);
+});
+
+test('plan construction signs only the root and mandatory DB, regardless of sibling count', async t => {
+  const f = await fixture(t, { providerOptions: { packageApi: { ...packageApi, inspectSvfEnvelope: async () => ({
+    supportProfile: PROFILE, resourceClosureVerified: false,
+    resources: Array.from({ length: 1000 }, (_, i) => ({ path: 'output/0/part' + i + '.pf', bytes: 41 })),
+  }) } } });
+  const plan = await f.provider.getDownloadPlan(f.context);
+  assert.equal(plan.resources.length, 1002);
+  assert.equal(f.provider.counts.signedResource, 2);
+  assert.equal(f.provider.counts.rawResource, 1);
+  assert.equal(f.provider.counts.cloudDataMutations, 0);
+  const first = JSON.stringify(plan);
+  f.control.now += 10000;
+  assert.equal(JSON.stringify(await f.provider.getDownloadPlan(f.context)), first);
+  assert.equal(f.provider.counts.signedResource, 4);
+});
+
+test('adapter resume validates cached bytes before signing only the missing sibling', async t => {
+  const f = await fixture(t), capture = path.join(f.root, 'capture');
+  await fs.mkdir(capture);
+  const snapshotPath = path.join(capture, f.context.source.name);
+  await fs.copyFile(f.context.source.snapshotPath, snapshotPath);
+  const job = { jobId: randomUUID(), frozen: { ...f.context, source: { ...f.context.source, snapshotPath } } };
+  const adapter = await createPackageAdapter({ packageApi, workDirectory: path.join(f.root, 'adapter-work') });
+  let saved;
+  const checkpoint = async state => { saved = structuredClone(state); };
+  const originalPlan = await f.provider.getDownloadPlan(f.context);
+  await adapter.download(job, { provider: f.provider, onCheckpoint: checkpoint });
+  const previous = structuredClone(saved), signedBefore = f.provider.counts.signedResource, rawBefore = f.provider.counts.rawResource;
+  await fs.unlink(path.join(previous.modelDirectory, 'output/0/0.pf'));
+  f.control.now += 10000;
+  const resumed = await adapter.download(job, { provider: f.provider, previous, onCheckpoint: checkpoint });
+  assert.equal(resumed.download.status, 'downloaded');
+  assert.equal(f.provider.counts.signedResource - signedBefore, 3); // root, DB metadata, missing PF
+  assert.equal(f.provider.counts.rawResource - rawBefore, 2); // root, missing PF
+  assert.deepEqual(await f.provider.getDownloadPlan(f.context), originalPlan);
+  assert.deepEqual(await fs.readFile(path.join(resumed.modelDirectory, 'output/0/0.pf')), f.data.get('output/0/0.pf'));
+  const badCache = path.join(resumed.modelDirectory, 'output/0/0.pf');
+  const bytes = await fs.readFile(badCache); bytes[bytes.length - 1] ^= 1; await fs.writeFile(badCache, bytes);
+  const rawNext = f.provider.counts.rawResource;
+  await adapter.download(job, { provider: f.provider, previous: saved, onCheckpoint: checkpoint });
+  assert.equal(f.provider.counts.rawResource - rawNext, 2); // corrupt same-size file is downloaded again
+  assert.deepEqual(await fs.readFile(badCache), f.data.get('output/0/0.pf'));
+  assert.equal(f.provider.counts.cloudDataMutations, 0);
+});
+
+test('lazy signing respects cancellation and a denied read without starting a body request', async t => {
+  let denied = false;
+  const f = await fixture(t, { authorizeRead: async () => { if (denied) throw new CoreError('READ_LIMIT'); } });
+  const plan = await f.provider.getDownloadPlan(f.context), row = plan.resources.find(r => r.path.endsWith('0.pf'));
+  const before = f.calls.length, controller = new AbortController(); controller.abort();
+  await rejects(readAll(f.provider, f.context, row.resourceId, { signal: controller.signal }), 'LOCAL_ABORTED');
+  assert.equal(f.calls.length, before);
+  denied = true;
+  await rejects(readAll(f.provider, f.context, row.resourceId), 'READ_LIMIT');
+  assert.equal(f.calls.length, before);
+});
+
+test('a refreshed signature cannot change the immutable resource size or start a second body', async t => {
+  let changed = false;
+  const f = await fixture(t, { reply: async (input, h) => {
+    if (input.url.endsWith('/signedcookies') && decodeURIComponent(new URL(input.url).pathname).includes('/0.pf/')) {
+      const response = await h.defaultReply(input);
+      if (changed) response.body = Buffer.from(JSON.stringify({ ...JSON.parse(response.body), size: 42 }));
+      changed = true; return response;
+    }
+    return h.defaultReply(input);
+  } });
+  const plan = await f.provider.getDownloadPlan(f.context), row = plan.resources.find(r => r.path.endsWith('0.pf'));
+  f.control.forbiddenRaw = true;
+  await rejects(readAll(f.provider, f.context, row.resourceId), 'DOWNLOAD_PLAN_CHANGED');
+  assert.equal(f.provider.counts.rawResource, 2); // root and one rejected PF, no body using changed metadata
+  assert.equal(f.provider.counts.cloudDataMutations, 0);
 });

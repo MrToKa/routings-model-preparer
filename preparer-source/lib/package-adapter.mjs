@@ -181,7 +181,13 @@ export async function createPackageAdapter({ packageModulePath, packageApi, work
     const downloadBudget = new AbortController();
     const downloadTimer = setTimeout(() => downloadBudget.abort(), downloadMaxMs);
     let operationSignal = signal ? AbortSignal.any([signal, downloadBudget.signal]) : downloadBudget.signal;
-    let state;
+    let state, phase = 'manifest', plannedResources = 0, resourceIndex = -1, reusedResources = 0, downloadedResources = 0;
+    const startedAt = Date.now();
+    const progress = (event, facts = {}) => {
+      try { process.stderr.write(JSON.stringify({ event, submissionIdentity: frozen.submissionIdentity, phase,
+        plannedResources, resourceIndex, completedResources: Object.keys(state?.checkpoints ?? {}).length,
+        reusedResources, downloadedResources, ...facts }) + '\n'); } catch {}
+    };
     try {
       abortCheck(operationSignal);
       const observation = validateManifestObservation(await abortable(provider.getManifest(frozen, { signal: operationSignal }), operationSignal), frozen);
@@ -190,7 +196,9 @@ export async function createPackageAdapter({ packageModulePath, packageApi, work
       if (rootId === undefined) { if (observation.roots.length !== 1) fail('DERIVATIVE_AMBIGUOUS'); rootId = observation.roots[0].rootId; }
       identifier(rootId, 'DERIVATIVE_AMBIGUOUS');
       if (!observation.roots.some(root => root.rootId === rootId)) fail('DERIVATIVE_AMBIGUOUS');
+      phase = 'download-plan';
       const plan = validatePlan(await abortable(provider.getDownloadPlan(frozen, { rootId, signal: operationSignal }), operationSignal), frozen, rootId, limits);
+      plannedResources = plan.resources.length;
       const planDigest = digest(plan);
       const jobRoot = path.join(work, job.jobId);
       const base = path.join(jobRoot, planDigest);
@@ -203,11 +211,13 @@ export async function createPackageAdapter({ packageModulePath, packageApi, work
       state = { schemaVersion: 1, status: 'downloading', planDigest, rootId, checkpoints: clone(previous?.checkpoints ?? {}), modelDirectory };
       // Parent's store is authoritative. No additional download ledger is read.
       await onCheckpoint(clone(state));
+      progress('download-plan-ready');
       for (const filename of ['model.json', 'integrity.json']) {
         const target = path.join(modelDirectory, filename);
         if (await optionalFile(target)) await fs.unlink(target);
       }
       for (const resource of plan.resources) {
+        resourceIndex++; phase = 'checkpoint-verification';
         abortCheck(operationSignal);
         const filename = path.join(modelDirectory, ...resource.path.split('/'));
         await inspectLocal(path.dirname(filename), { directory: true, create: true });
@@ -217,7 +227,8 @@ export async function createPackageAdapter({ packageModulePath, packageApi, work
           const actual = await hashLocal(filename, limits.maxFileBytes, operationSignal);
           reusable = actual.bytes === resource.bytes && actual.bytes === checkpoint.bytes && actual.sha256 === checkpoint.sha256 && (resource.sha256 === undefined || resource.sha256 === actual.sha256);
         }
-        if (reusable) continue;
+        if (reusable) { reusedResources++; continue; }
+        phase = 'resource-transfer';
         delete state.checkpoints[resource.path];
         const temporary = path.join(partsDirectory, `resource-${randomUUID()}.part`);
         const handle = await fs.open(temporary, 'wx', 0o600);
@@ -247,7 +258,9 @@ export async function createPackageAdapter({ packageModulePath, packageApi, work
           await fs.rename(temporary, filename);
           state.checkpoints[resource.path] = { bytes: total, sha256, resourceId: resource.resourceId };
           // A failed checkpoint commit blocks all later dependent work.
+          phase = 'checkpoint-commit';
           await onCheckpoint(clone(state));
+          downloadedResources++;
         } finally {
           await handle.close().catch(() => {});
           try { iterable?.destroy?.(); } catch { /* Foreign cleanup must not expose provider messages. */ }
@@ -256,6 +269,7 @@ export async function createPackageAdapter({ packageModulePath, packageApi, work
           await fs.rm(temporary, { force: true });
         }
       }
+      phase = 'inventory';
       const expected = new Set(plan.resources.map(row => row.path)), expectedDirectories = new Set();
       for (const resource of expected) {
         const parts = resource.split('/');
@@ -288,6 +302,8 @@ export async function createPackageAdapter({ packageModulePath, packageApi, work
       // Package validation retains its own fixed ten-minute profile deadline.
       abortCheck(operationSignal);
       clearTimeout(downloadTimer);
+      progress('download-transfer-complete');
+      phase = 'profile-validation';
       operationSignal = signal;
       try {
         await packageApi.validateProfile({ resources: inventory,
@@ -310,7 +326,13 @@ export async function createPackageAdapter({ packageModulePath, packageApi, work
       // The orchestrator records interruption/error. Do not retry a failed
       // state commit or replace durable checkpoint evidence in this catch.
       if (signal?.aborted) throw new CoreError('LOCAL_ABORTED');
-      if (downloadBudget.signal.aborted) throw new CoreError('PACKAGE_LIMIT_EXCEEDED');
+      if (downloadBudget.signal.aborted) {
+        progress('download-limit-exceeded', { check: 'transport-deadline', elapsedMs: Date.now() - startedAt, limitMs: downloadMaxMs });
+        throw new CoreError('PACKAGE_LIMIT_EXCEEDED');
+      }
+      if (error instanceof CoreError && error.code === 'PACKAGE_LIMIT_EXCEEDED') {
+        progress('download-limit-exceeded', { check: 'resource-limit', elapsedMs: Date.now() - startedAt });
+      }
       if (error instanceof CoreError) throw error;
       throw new CoreError('PROVIDER_FAILURE');
     } finally {
