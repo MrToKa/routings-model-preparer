@@ -6,6 +6,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
+import { gzipSync } from 'node:zlib';
 import * as publicPackage from '../../routings-model-package/index.mjs';
 import { createPackageAdapter } from '../lib/package-adapter.mjs';
 import { CoreError, contextFromSpec, clone } from '../lib/contracts.mjs';
@@ -516,4 +517,40 @@ test('transfer summary counts verified reuse separately from newly downloaded re
   const rows = logs.filter(r => r.event === 'download-transfer-complete');
   assert.equal(rows.length, 2);
   assert.deepEqual(rows.map(r => [r.plannedResources, r.reusedResources, r.downloadedResources, r.completedResources]), [[3, 0, 3, 3], [3, 3, 0, 3]]);
+});
+
+test('both material document basenames survive adapter download, packaging and independent verification', async t => {
+  const f = await setup(t), scene = { SceneUnit: 8193, YIsUp: 0 };
+  const simple = { name: 'LMVTK Simple Materials', version: '1.0', scene,
+    materials: { group: { version: 2, userassets: ['shader'], materials: { shader: {
+      tag: '', definition: 'SimplePhong', transparent: false, textures: {}, properties: {},
+    } } } } };
+  const protein = { name: 'LMVTK Protein Materials', version: '1.0', scene,
+    materials: { group: { version: 2, userassets: ['catalog'], materials: { catalog: {
+      tag: '', definition: 'Generic', categories: [], keywords: [], properties: {},
+    } } } } };
+  const archive = await openZip(f.model.data.get('output/0/0.svf'));
+  let entries;
+  try { entries = await Promise.all([...archive.entries.values()].filter(e => !e.isDirectory).map(async e => ({ name: e.name, data: await archive.read(e.name) }))); }
+  finally { await archive.close(); }
+  const manifestEntry = entries.find(e => e.name === 'manifest.json'), manifest = JSON.parse(manifestEntry.data);
+  for (const [URI, document] of [['Materials.json.gz', simple], ['ProteinMaterials.json.gz', protein]]) {
+    const raw = gzipSync(Buffer.from(JSON.stringify(document)));
+    f.model.data.set('output/0/' + URI, raw);
+    manifest.assets.push({ id: URI, type: 'ProteinMaterials', URI, size: raw.length, usize: 0 });
+  }
+  manifestEntry.data = Buffer.from(JSON.stringify(manifest));
+  const svfFile = path.join(f.root, 'material-fixture.svf'); await writeZip(svfFile, entries);
+  f.model.data.set('output/0/0.svf', await fs.readFile(svfFile));
+  f.model.resources.splice(0, f.model.resources.length, ...[...f.model.data].map(([p, b]) =>
+    ({ path: p, resourceId: 'resource-' + hash(Buffer.from(p)), bytes: b.length, sha256: hash(b) })));
+  f.plan.resources = clone(f.model.resources);
+  const result = await f.adapter.download(f.job, { provider: f.provider, onCheckpoint: f.onCheckpoint });
+  assert.equal(result.download.status, 'downloaded');
+  assert.ok(f.calls.resources.includes('output/0/ProteinMaterials.json.gz'));
+  const published = await f.adapter.buildPackage(f.job, { modelDirectory: result.modelDirectory });
+  assert.equal(published.status, 'PASS');
+  assert.equal((await f.adapter.registerPackage(published.path)).status, 'PASS');
+  for (const name of ['Materials.json.gz', 'ProteinMaterials.json.gz']) assert.deepEqual(
+    await fs.readFile(path.join(result.modelDirectory, 'output/0', name)), f.model.data.get('output/0/' + name));
 });

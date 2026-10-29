@@ -28,7 +28,7 @@ jobs:
       - name: Verify service, workspace and browser request contracts
         run: node --test --test-concurrency=1 preparer-source/app-test/*.test.mjs
       - name: Verify raster inspection and portable packages
-        run: node --test --test-concurrency=1 routings-model-package/test/image-assets.test.mjs routings-model-package/test/inspection.test.mjs
+        run: node --test --test-concurrency=1 routings-model-package/test/image-assets.test.mjs routings-model-package/test/inspection.test.mjs routings-model-package/test/profile.test.mjs routings-model-package/test/material-assets.test.mjs
       - name: Verify isolated read-only diagnostics
         run: node --test --test-concurrency=1 preparer-source/test/svf-path-diagnostics.test.mjs
       - name: Verify signing and complete download/package flow
