@@ -24,6 +24,8 @@ jobs:
         run: node -e "if (process.versions.node.split('.')[0] !== '24') process.exit(1)"
       - name: Verify authorization expiry and error propagation
         run: node --test --test-concurrency=1 preparer-source/test/engineer-cost-provider.test.mjs preparer-source/app-test/cost-errors.test.mjs
+      - name: Verify service, workspace and browser request contracts
+        run: node --test --test-concurrency=1 preparer-source/app-test/*.test.mjs
       - name: Verify raster inspection and portable packages
         run: node --test --test-concurrency=1 routings-model-package/test/image-assets.test.mjs routings-model-package/test/inspection.test.mjs
       - name: Verify signing and complete download/package flow
