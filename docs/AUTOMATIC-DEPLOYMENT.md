@@ -47,3 +47,19 @@ that coordination. Do not automatically recover stale locks, repeat uncertain
 submissions, erase volumes, or restore snapshots over newer work.
 
 Local release tests: `node --test scripts/cicd/release.test.mjs`.
+
+## GitHub-triggered deployment and retained versions
+
+After complete publication, `request-lan-deploy` can signal the private
+operations repository. Configure `LAN_DEPLOY_REPOSITORY` and secret
+`LAN_DEPLOY_TOKEN` as described in the companion WFC deployment guide. A
+repository-specific Windows runner in that private repository executes the
+reviewed local updater; never register the production runner to this public
+repository. No inbound public port is required. Polling remains optional.
+
+The shared updater pins two confirmed working version sets per application:
+current and previous. Failed candidates never replace this history. Old managed
+rollback tags are released after successful acceptance; infrastructure, volumes,
+registry tags and unrelated images are untouched. Image rollback does not
+restore state or databases. Event-only busy deployments fail visibly and must
+be rerun after the maintenance window is available.
